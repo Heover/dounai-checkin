@@ -1,4 +1,4 @@
-fetch("https://dounai.pro/auth/login", {
+fetch("https://dounai.win/auth/login", {
   "headers": {
     "accept": "application/json, text/javascript, */*; q=0.01",
     "accept-language": "zh-CN,zh;q=0.9",
@@ -12,7 +12,7 @@ fetch("https://dounai.pro/auth/login", {
     "sec-fetch-site": "same-origin",
     "x-requested-with": "XMLHttpRequest"
   },
-  "referrer": "https://dounai.pro/auth/login",
+  "referrer": "https://dounai.win/auth/login",
   "body": "email=YOUR_EMAIL&passwd=YOUR_PASSWORD",
   "method": "POST",
   "mode": "cors",

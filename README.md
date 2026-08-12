@@ -1,6 +1,6 @@
 # 豆奶自动签到
 
-每日自动登录 [dounai.pro](https://dounai.pro) 并签到，获取免费流量，通过 Server酱3 推送结果到微信。
+每日自动登录 [dounai.win](https://dounai.win) 并签到，获取免费流量，通过 Server酱3 推送结果到微信。
 
 ## 工作流
 

@@ -1,4 +1,4 @@
-fetch("https://dounai.pro/user/checkin", {
+fetch("https://dounai.win/user/checkin", {
   "headers": {
     "accept": "application/json, text/javascript, */*; q=0.01",
     "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,zh-TW;q=0.5",
@@ -11,7 +11,7 @@ fetch("https://dounai.pro/user/checkin", {
     "sec-fetch-site": "same-origin",
     "x-requested-with": "XMLHttpRequest"
   },
-  "referrer": "https://dounai.pro/user/panel",
+  "referrer": "https://dounai.win/user/panel",
   "body": null,
   "method": "POST",
   "mode": "cors",

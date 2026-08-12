@@ -1,7 +1,7 @@
 {
   "name": "dounai-checkin",
   "version": "1.0.0",
-  "description": "dounai.pro 自动签到 - 每日自动登录获取免费流量",
+  "description": "dounai.win 自动签到 - 每日自动登录获取免费流量",
   "type": "module",
   "scripts": {
     "checkin": "node scripts/checkin.mjs"

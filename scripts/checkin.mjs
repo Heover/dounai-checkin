@@ -31,7 +31,7 @@ try {
 // ========== 配置 ==========
 const EMAIL = process.env.DOUNAI_EMAIL;
 const PASSWD = process.env.DOUNAI_PASSWD;
-const BASE_URL = "https://dounai.pro";
+const BASE_URL = "https://dounai.win";
 
 // ========== 工具函数 ==========
 
@@ -112,7 +112,7 @@ function parseCookies(setCookieHeaders) {
 // ========== 签到流程 ==========
 
 async function login() {
-  console.log("正在登录 dounai.pro ...");
+  console.log("正在登录 dounai.win ...");
 
   const body = stringify({
     email: EMAIL,
@@ -250,7 +250,7 @@ async function sendServerChanMessage(title, message) {
 // ========== 主流程 ==========
 
 async function main() {
-  console.log("========== 豆奶(dounai.pro) 自动签到 ==========");
+  console.log("========== 豆奶(dounai.win) 自动签到 ==========");
   console.log(`账号: ${EMAIL}`);
   console.log("");
 
