@@ -5,7 +5,7 @@
 ## 工作流
 
 ```
-登录 → 访问面板建立会话 → 签到 → Server酱3 推送
+获取验证码并识别 → 登录 → 访问面板建立会话 → 签到 → Server酱3 推送
 ```
 
 ## 定时
@@ -24,6 +24,9 @@
 ## 本地调试
 
 ```bash
+# 安装依赖（tesseract.js 用于识别登录验证码）
+npm install
+
 # 创建 .env 文件
 echo "DOUNAI_EMAIL=your@email.com" > .env
 echo "DOUNAI_PASSWD=your_password" >> .env
@@ -34,8 +37,10 @@ echo "SERVER_KEY=your_key" >> .env
 npm run checkin
 ```
 
+> 首次运行 tesseract.js 会从 CDN 下载 OCR 模型（约 15MB），之后自动缓存。
+
 ## 技术栈
 
-- Node.js 20+（零依赖，仅内置模块）
+- Node.js 20+（tesseract.js 验证码识别，无需 Python 环境）
 - GitHub Actions 定时调度
 - Server酱3 消息推送

@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: 安装依赖
+        run: npm install
       - name: 执行签到
         env:
           DOUNAI_EMAIL: ${{ secrets.DOUNAI_EMAIL }}

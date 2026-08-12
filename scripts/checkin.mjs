@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { stringify } from "node:querystring";
 import { fileURLToPath } from "node:url";
+import { createWorker, PSM, OEM } from "tesseract.js";
+import { Jimp } from "jimp";
 
 // ========== 加载 .env（本地调试用） ==========
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -111,26 +113,121 @@ function parseCookies(setCookieHeaders) {
 
 // ========== 签到流程 ==========
 
+/**
+ * 用 tesseract.js 识别验证码图片（data URL）
+ * 预处理：放大 3 倍 + 反相（验证码为深底浅字，反相成黑底白字识别率最高）
+ * 白名单 + 单行模式，输出清洗后的 4 位字符
+ */
+async function recognizeCaptcha(worker, dataUrl) {
+  const base64 = dataUrl.split(",")[1];
+  const img = await Jimp.read(Buffer.from(base64, "base64"));
+  const processed = await img.clone().scale(3).invert().getBuffer("image/png");
+  const { data } = await worker.recognize(processed);
+  return data.text.replace(/[^0-9a-zA-Z]/g, "").slice(0, 4).toLowerCase();
+}
+
 async function login() {
   console.log("正在登录 dounai.win ...");
 
-  const body = stringify({
-    email: EMAIL,
-    passwd: PASSWD,
-  });
-
-  const res = await request("POST", `${BASE_URL}/auth/login`, { body });
-
-  console.log(`  登录响应状态: ${res.status}`);
-
-  if (res.cookies.length === 0) {
-    console.warn("  ⚠ 登录未返回任何 cookie，请检查账号密码是否正确");
+  // 初始化 OCR 引擎（识别登录图形验证码）
+  let worker;
+  try {
+    worker = await createWorker("eng", OEM.LSTM_ONLY, { logger: () => {} });
+    await worker.setParameters({
+      tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyz",
+      tessedit_pageseg_mode: PSM.SINGLE_LINE,
+    });
+  } catch (err) {
+    console.error(`  ❌ 无法初始化 OCR 引擎: ${err.message}`);
+    return null;
   }
 
-  const cookieStr = parseCookies(res.cookies);
-  console.log(`  获取到的 cookie: ${cookieStr || "(无)"}`);
+  const MAX_ATTEMPTS = 3;
+  try {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // 1. 获取图形验证码（验证码与返回的会话 cookie 绑定，需复用）
+      const captchaRes = await request("GET", `${BASE_URL}/auth/captcha`);
 
-  return cookieStr;
+      let captchaData;
+      try {
+        captchaData = JSON.parse(captchaRes.body);
+      } catch {
+        captchaData = null;
+      }
+      const svgMatch = captchaData?.svg?.match(/src="(data:image\/[^"]+)"/);
+      if (!svgMatch) {
+        console.warn(`  ⚠ 获取验证码失败，重试（${attempt}/${MAX_ATTEMPTS}）`);
+        continue;
+      }
+
+      const sessionCookie = parseCookies(captchaRes.cookies);
+
+      // 2. 识别验证码
+      let captchaCode;
+      try {
+        captchaCode = await recognizeCaptcha(worker, svgMatch[1]);
+      } catch (err) {
+        console.warn(`  ⚠ 验证码识别失败: ${err.message}，重试（${attempt}/${MAX_ATTEMPTS}）`);
+        continue;
+      }
+      console.log(`  第 ${attempt} 次尝试，识别验证码: ${captchaCode}`);
+
+      if (captchaCode.length !== 4) {
+        console.warn(`  ⚠ 验证码识别结果异常（${captchaCode || "空"}），刷新重试`);
+        continue;
+      }
+
+      // 3. 携带验证码登录
+      const body = stringify({
+        email: EMAIL,
+        passwd: PASSWD,
+        captcha_code: captchaCode,
+      });
+
+      const res = await request("POST", `${BASE_URL}/auth/login`, {
+        body,
+        headers: sessionCookie ? { Cookie: sessionCookie } : {},
+      });
+
+      let result;
+      try {
+        result = JSON.parse(res.body);
+      } catch {
+        result = { raw: res.body };
+      }
+
+      const msg = result.msg || "";
+      console.log(`  登录响应状态: ${res.status}，ret=${result.ret}`);
+
+      if (result.ret === 1) {
+        const loginCookies = parseCookies(res.cookies);
+        const cookieStr = sessionCookie
+          ? `${sessionCookie}; ${loginCookies}`
+          : loginCookies;
+        console.log(`  获取到的 cookie: ${cookieStr || "(无)"}`);
+        return cookieStr;
+      }
+
+      if (msg.includes("验证码")) {
+        console.warn(`  ⚠ 验证码错误，刷新重试（${attempt}/${MAX_ATTEMPTS}）`);
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+
+      // 其他错误（如账号密码错误）直接失败，不再重试
+      console.error(`  ❌ 登录失败：${msg || res.body}`);
+      break;
+    }
+  } finally {
+    try {
+      await worker.terminate();
+    } catch (_) {
+      // 忽略释放错误
+    }
+  }
+
+  console.error("  ❌ 登录失败：多次尝试后仍无法登录");
+  return null;
 }
 
 async function checkin(cookieStr) {
@@ -146,6 +243,11 @@ async function checkin(cookieStr) {
 
   console.log(`  签到响应状态: ${res.status}`);
   console.log(`  签到响应内容: ${res.body}`);
+
+  if (res.status === 401) {
+    console.error("  ❌ 签到响应 401：会话未认证，登录状态无效");
+    return { success: false, msg: "会话未认证，登录状态无效" };
+  }
 
   let result;
   try {
@@ -189,6 +291,11 @@ async function visitPanel(cookieStr) {
   });
 
   console.log(`  面板响应状态: ${res.status}`);
+
+  if (res.status === 401) {
+    console.error("  ❌ 会话未认证：登录状态无效，签到无法继续");
+    return null;
+  }
 
   if (res.cookies && res.cookies.length > 0) {
     const newCookies = parseCookies(res.cookies);
@@ -266,6 +373,10 @@ async function main() {
 
     // 2. 访问面板建立会话
     const panelCookie = await visitPanel(cookieStr);
+    if (!panelCookie) {
+      console.error("❌ 会话验证失败，退出");
+      process.exit(1);
+    }
 
     await new Promise((r) => setTimeout(r, 500));
 

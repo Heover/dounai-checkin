@@ -6,6 +6,14 @@
   "scripts": {
     "checkin": "node scripts/checkin.mjs"
   },
-  "keywords": ["checkin", "dounai", "github-actions"],
-  "license": "MIT"
+  "keywords": [
+    "checkin",
+    "dounai",
+    "github-actions"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "jimp": "^1.6.1",
+    "tesseract.js": "^7.0.0"
+  }
 }
