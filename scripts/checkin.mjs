@@ -8,7 +8,8 @@ import { createWorker, PSM, OEM } from "tesseract.js";
 import { Jimp } from "jimp";
 
 // ========== 加载 .env（本地调试用） ==========
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 try {
   const envPath = path.join(__dirname, "..", ".env");
   if (fs.existsSync(envPath)) {
@@ -98,17 +99,38 @@ function request(method, urlStr, opts = {}) {
 }
 
 /**
- * 提取 cookie 字符串中的 key=value
+ * 最小 Cookie 容器：按名称覆盖同名 Cookie，避免重复 PHPSESSID 导致会话错乱。
  */
-function parseCookies(setCookieHeaders) {
-  const cookies = [];
-  for (const h of setCookieHeaders) {
-    const parts = h.split(";");
-    if (parts.length > 0) {
-      cookies.push(parts[0].trim());
+export class CookieJar {
+  constructor() {
+    this.cookies = new Map();
+  }
+
+  update(setCookieHeaders = []) {
+    for (const header of setCookieHeaders) {
+      const pair = header.split(";", 1)[0]?.trim();
+      const separator = pair?.indexOf("=") ?? -1;
+      if (separator <= 0) continue;
+
+      const name = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+      if (name) this.cookies.set(name, value);
     }
   }
-  return cookies.join("; ");
+
+  toHeader() {
+    return [...this.cookies.entries()]
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; ");
+  }
+
+  get size() {
+    return this.cookies.size;
+  }
+}
+
+export function isCaptchaError(message = "") {
+  return message.includes("验证码") && /(错误|超时|过期|失效)/.test(message);
 }
 
 // ========== 签到流程 ==========
@@ -126,58 +148,72 @@ async function recognizeCaptcha(worker, dataUrl) {
   return data.text.replace(/[^0-9a-zA-Z]/g, "").slice(0, 4).toLowerCase();
 }
 
+async function createCaptchaWorker() {
+  const worker = await createWorker("eng", OEM.LSTM_ONLY, { logger: () => {} });
+  await worker.setParameters({
+    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyz",
+    tessedit_pageseg_mode: PSM.SINGLE_LINE,
+  });
+  return worker;
+}
+
+/**
+ * 在指定会话中刷新并识别验证码。
+ */
+async function fetchCaptcha(worker, cookieJar) {
+  const cookieHeader = cookieJar.toHeader();
+  const captchaRes = await request("GET", `${BASE_URL}/auth/captcha`, {
+    headers: cookieHeader ? { Cookie: cookieHeader } : {},
+  });
+  cookieJar.update(captchaRes.cookies);
+
+  let captchaData;
+  try {
+    captchaData = JSON.parse(captchaRes.body);
+  } catch {
+    throw new Error(`验证码响应不是 JSON（HTTP ${captchaRes.status}）`);
+  }
+
+  const imageMatch = captchaData?.svg?.match(/src="(data:image\/[^\"]+)"/);
+  if (!imageMatch) {
+    throw new Error(`验证码响应缺少图片（HTTP ${captchaRes.status}）`);
+  }
+
+  const captchaCode = await recognizeCaptcha(worker, imageMatch[1]);
+  if (captchaCode.length !== 4) {
+    throw new Error(`验证码识别结果异常（${captchaCode || "空"}）`);
+  }
+
+  return captchaCode;
+}
+
 async function login() {
   console.log("正在登录 dounai.win ...");
 
   // 初始化 OCR 引擎（识别登录图形验证码）
   let worker;
   try {
-    worker = await createWorker("eng", OEM.LSTM_ONLY, { logger: () => {} });
-    await worker.setParameters({
-      tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyz",
-      tessedit_pageseg_mode: PSM.SINGLE_LINE,
-    });
+    worker = await createCaptchaWorker();
   } catch (err) {
     console.error(`  ❌ 无法初始化 OCR 引擎: ${err.message}`);
     return null;
   }
 
   const MAX_ATTEMPTS = 3;
+  const cookieJar = new CookieJar();
   try {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       // 1. 获取图形验证码（验证码与返回的会话 cookie 绑定，需复用）
-      const captchaRes = await request("GET", `${BASE_URL}/auth/captcha`);
-
-      let captchaData;
-      try {
-        captchaData = JSON.parse(captchaRes.body);
-      } catch {
-        captchaData = null;
-      }
-      const svgMatch = captchaData?.svg?.match(/src="(data:image\/[^"]+)"/);
-      if (!svgMatch) {
-        console.warn(`  ⚠ 获取验证码失败，重试（${attempt}/${MAX_ATTEMPTS}）`);
-        continue;
-      }
-
-      const sessionCookie = parseCookies(captchaRes.cookies);
-
-      // 2. 识别验证码
       let captchaCode;
       try {
-        captchaCode = await recognizeCaptcha(worker, svgMatch[1]);
+        captchaCode = await fetchCaptcha(worker, cookieJar);
       } catch (err) {
-        console.warn(`  ⚠ 验证码识别失败: ${err.message}，重试（${attempt}/${MAX_ATTEMPTS}）`);
+        console.warn(`  ⚠ 获取或识别验证码失败: ${err.message}，重试（${attempt}/${MAX_ATTEMPTS}）`);
         continue;
       }
       console.log(`  第 ${attempt} 次尝试，识别验证码: ${captchaCode}`);
 
-      if (captchaCode.length !== 4) {
-        console.warn(`  ⚠ 验证码识别结果异常（${captchaCode || "空"}），刷新重试`);
-        continue;
-      }
-
-      // 3. 携带验证码登录
+      // 2. 携带验证码登录
       const body = stringify({
         email: EMAIL,
         passwd: PASSWD,
@@ -186,8 +222,9 @@ async function login() {
 
       const res = await request("POST", `${BASE_URL}/auth/login`, {
         body,
-        headers: sessionCookie ? { Cookie: sessionCookie } : {},
+        headers: cookieJar.size ? { Cookie: cookieJar.toHeader() } : {},
       });
+      cookieJar.update(res.cookies);
 
       let result;
       try {
@@ -200,12 +237,8 @@ async function login() {
       console.log(`  登录响应状态: ${res.status}，ret=${result.ret}`);
 
       if (result.ret === 1) {
-        const loginCookies = parseCookies(res.cookies);
-        const cookieStr = sessionCookie
-          ? `${sessionCookie}; ${loginCookies}`
-          : loginCookies;
-        console.log(`  获取到的 cookie: ${cookieStr || "(无)"}`);
-        return cookieStr;
+        console.log(`  登录会话已建立（${cookieJar.size} 个 Cookie）`);
+        return cookieJar;
       }
 
       if (msg.includes("验证码")) {
@@ -230,23 +263,24 @@ async function login() {
   return null;
 }
 
-async function checkin(cookieStr) {
-  console.log("正在签到 ...");
-
+async function submitCheckin(cookieJar, captchaCode = null) {
+  const body = captchaCode ? stringify({ captcha_code: captchaCode }) : undefined;
   const res = await request("POST", `${BASE_URL}/user/checkin`, {
+    ...(body ? { body } : {}),
     headers: {
-      Cookie: cookieStr,
+      Cookie: cookieJar.toHeader(),
       Referer: `${BASE_URL}/user/panel`,
       Origin: BASE_URL,
     },
   });
+  cookieJar.update(res.cookies);
 
   console.log(`  签到响应状态: ${res.status}`);
   console.log(`  签到响应内容: ${res.body}`);
 
   if (res.status === 401) {
     console.error("  ❌ 签到响应 401：会话未认证，登录状态无效");
-    return { success: false, msg: "会话未认证，登录状态无效" };
+    return { success: false, msg: "会话未认证，登录状态无效", captchaError: false };
   }
 
   let result;
@@ -266,43 +300,87 @@ async function checkin(cookieStr) {
     if (traffic && duration) {
       console.log(`  ✅ 签到成功！${result.msg}`);
       return { success: true, msg: result.msg, traffic, duration };
-    } else {
-      console.log(`  ❌ 签到响应异常：未检测到流量或时长信息`);
-      return { success: false, msg: result.msg, traffic, duration };
     }
-  } else {
-    console.log(`  ❌ 签到失败：${result.msg || "未知错误"}`);
-    return { success: false, msg: result.msg || res.body };
+
+    console.log("  ❌ 签到响应异常：未检测到流量或时长信息");
+    return { success: false, msg: result.msg, traffic, duration, captchaError: false };
   }
+
+  const msg = result.msg || res.body || "未知错误";
+  const captchaError = isCaptchaError(msg);
+  console.log(`  ❌ 签到失败：${msg}`);
+  return { success: false, msg, captchaError };
+}
+
+async function checkin(cookieJar) {
+  console.log("正在签到 ...");
+
+  let result = await submitCheckin(cookieJar);
+  if (result.success || !result.captchaError) return result;
+
+  console.warn("  ⚠ 签到端验证码无效，刷新验证码后重试");
+
+  let worker;
+  try {
+    worker = await createCaptchaWorker();
+  } catch (err) {
+    console.error(`  ❌ 无法初始化签到验证码 OCR：${err.message}`);
+    return result;
+  }
+
+  const MAX_CAPTCHA_ATTEMPTS = 3;
+  try {
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_ATTEMPTS; attempt++) {
+      let captchaCode;
+      try {
+        captchaCode = await fetchCaptcha(worker, cookieJar);
+      } catch (err) {
+        console.warn(`  ⚠ 获取或识别签到验证码失败：${err.message}（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
+        continue;
+      }
+
+      console.log(`  第 ${attempt} 次签到验证码尝试，识别结果: ${captchaCode}`);
+      result = await submitCheckin(cookieJar, captchaCode);
+      if (result.success || !result.captchaError) return result;
+
+      if (attempt < MAX_CAPTCHA_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+  } finally {
+    try {
+      await worker.terminate();
+    } catch (_) {
+      // 忽略释放错误
+    }
+  }
+
+  return result;
 }
 
 /**
  * 访问用户面板页面，建立服务端会话
  */
-async function visitPanel(cookieStr) {
+async function visitPanel(cookieJar) {
   console.log("正在访问用户面板 ...");
 
   const res = await request("GET", `${BASE_URL}/user/panel`, {
     headers: {
-      Cookie: cookieStr,
+      Cookie: cookieJar.toHeader(),
       Referer: `${BASE_URL}/auth/login`,
       Origin: BASE_URL,
     },
   });
+  cookieJar.update(res.cookies);
 
   console.log(`  面板响应状态: ${res.status}`);
 
   if (res.status === 401) {
     console.error("  ❌ 会话未认证：登录状态无效，签到无法继续");
-    return null;
+    return false;
   }
 
-  if (res.cookies && res.cookies.length > 0) {
-    const newCookies = parseCookies(res.cookies);
-    return cookieStr ? cookieStr + "; " + newCookies : newCookies;
-  }
-
-  return cookieStr;
+  return true;
 }
 
 // ========== Server酱3 推送 ==========
@@ -363,8 +441,8 @@ async function main() {
 
   try {
     // 1. 登录
-    const cookieStr = await login();
-    if (!cookieStr) {
+    const cookieJar = await login();
+    if (!cookieJar) {
       console.error("❌ 登录失败：未获取到 cookie，退出");
       process.exit(1);
     }
@@ -372,8 +450,8 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1000));
 
     // 2. 访问面板建立会话
-    const panelCookie = await visitPanel(cookieStr);
-    if (!panelCookie) {
+    const panelReady = await visitPanel(cookieJar);
+    if (!panelReady) {
       console.error("❌ 会话验证失败，退出");
       process.exit(1);
     }
@@ -381,7 +459,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 500));
 
     // 3. 签到
-    const result = await checkin(panelCookie);
+    const result = await checkin(cookieJar);
 
     // 4. 推送结果（简洁，不含时间）
     let pushTitle, pushMessage;
@@ -410,4 +488,6 @@ async function main() {
   }
 }
 
-main();
+if (path.resolve(process.argv[1] || "") === path.resolve(__filename)) {
+  main();
+}
