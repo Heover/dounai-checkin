@@ -24,5 +24,4 @@ jobs:
           DOUNAI_PASSWD: ${{ secrets.DOUNAI_PASSWD }}
           SERVER_UID: ${{ secrets.SERVER_UID }}
           SERVER_KEY: ${{ secrets.SERVER_KEY }}
-          DEBUG_CHECKIN_PROTOCOL: "1"
         run: node scripts/checkin.mjs

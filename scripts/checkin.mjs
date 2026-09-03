@@ -35,6 +35,7 @@ try {
 const EMAIL = process.env.DOUNAI_EMAIL;
 const PASSWD = process.env.DOUNAI_PASSWD;
 const BASE_URL = "https://dounai.win";
+const MAX_CAPTCHA_ATTEMPTS = 8;
 
 // ========== 工具函数 ==========
 
@@ -241,16 +242,15 @@ async function login() {
     return null;
   }
 
-  const MAX_ATTEMPTS = 3;
   const cookieJar = new CookieJar();
   try {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= MAX_CAPTCHA_ATTEMPTS; attempt++) {
       // 1. 获取图形验证码（验证码与返回的会话 cookie 绑定，需复用）
       let captchaCode;
       try {
         captchaCode = await fetchCaptcha(worker, cookieJar);
       } catch (err) {
-        console.warn(`  ⚠ 获取或识别验证码失败: ${err.message}，重试（${attempt}/${MAX_ATTEMPTS}）`);
+        console.warn(`  ⚠ 获取或识别验证码失败: ${err.message}，重试（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
         continue;
       }
       console.log(`  第 ${attempt} 次尝试，识别验证码: ${captchaCode}`);
@@ -284,7 +284,7 @@ async function login() {
       }
 
       if (msg.includes("验证码")) {
-        console.warn(`  ⚠ 验证码错误，刷新重试（${attempt}/${MAX_ATTEMPTS}）`);
+        console.warn(`  ⚠ 验证码错误，刷新重试（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
         await new Promise((r) => setTimeout(r, 500));
         continue;
       }
@@ -370,7 +370,6 @@ async function checkin(cookieJar) {
     return result;
   }
 
-  const MAX_CAPTCHA_ATTEMPTS = 3;
   try {
     for (let attempt = 1; attempt <= MAX_CAPTCHA_ATTEMPTS; attempt++) {
       let captchaCode;
@@ -416,22 +415,6 @@ async function visitPanel(cookieJar) {
   cookieJar.update(res.cookies);
 
   console.log(`  面板响应状态: ${res.status}`);
-
-  if (process.env.DEBUG_CHECKIN_PROTOCOL === "1") {
-    const endpointHints = [
-      ...res.body.matchAll(/["'`](\/[^"'`<>\s]*(?:captcha|checkin)[^"'`<>\s]*)["'`]/gi),
-    ].map((match) => match[1]);
-    const identifierHints = [
-      ...res.body.matchAll(/\b[A-Za-z_][\w-]*(?:captcha|checkin)[\w-]*\b/gi),
-    ].map((match) => match[0]);
-
-    console.log(
-      `  签到协议线索: ${JSON.stringify({
-        endpoints: [...new Set(endpointHints)],
-        identifiers: [...new Set(identifierHints)],
-      })}`,
-    );
-  }
 
   if (res.status === 401) {
     console.error("  ❌ 会话未认证：登录状态无效，签到无法继续");
