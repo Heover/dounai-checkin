@@ -2,11 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  captchaRetryDelayMs,
   CookieJar,
   isAlreadyCheckedIn,
   isCaptchaError,
   resolveCaptchaValue,
 } from "./checkin.mjs";
+
+test("登录验证码重试采用有上限的递增退避", () => {
+  assert.equal(captchaRetryDelayMs(1), 1000);
+  assert.equal(captchaRetryDelayMs(4), 8000);
+  assert.equal(captchaRetryDelayMs(7), 30000);
+  assert.equal(captchaRetryDelayMs(99), 30000);
+});
 
 test("CookieJar 用最新值覆盖同名会话 Cookie", () => {
   const jar = new CookieJar();

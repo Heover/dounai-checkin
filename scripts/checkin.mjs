@@ -36,6 +36,7 @@ const EMAIL = process.env.DOUNAI_EMAIL;
 const PASSWD = process.env.DOUNAI_PASSWD;
 const BASE_URL = "https://dounai.win";
 const MAX_CAPTCHA_ATTEMPTS = 8;
+const CAPTCHA_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000, 30000];
 
 // ========== 工具函数 ==========
 
@@ -136,6 +137,11 @@ export function isCaptchaError(message = "") {
 
 export function isAlreadyCheckedIn(message = "") {
   return /(已(?:经)?签到|签到过了|重复签到|已(?:经)?续过命|续过命了)/.test(message);
+}
+
+export function captchaRetryDelayMs(attempt) {
+  const index = Math.min(Math.max(Number(attempt) || 1, 1), CAPTCHA_RETRY_DELAYS_MS.length) - 1;
+  return CAPTCHA_RETRY_DELAYS_MS[index];
 }
 
 /**
@@ -256,7 +262,12 @@ async function login() {
       try {
         captchaCode = await fetchCaptcha(worker, cookieJar);
       } catch (err) {
-        console.warn(`  ⚠ 获取或识别验证码失败: ${err.message}，重试（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
+        console.warn(`  ⚠ 获取或识别验证码失败: ${err.message}（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
+        if (attempt < MAX_CAPTCHA_ATTEMPTS) {
+          const delayMs = captchaRetryDelayMs(attempt);
+          console.warn(`  等待 ${delayMs / 1000} 秒后刷新重试`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
         continue;
       }
       console.log(`  第 ${attempt} 次尝试，识别验证码: ${captchaCode}`);
@@ -290,8 +301,12 @@ async function login() {
       }
 
       if (msg.includes("验证码")) {
-        console.warn(`  ⚠ 验证码错误，刷新重试（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
-        await new Promise((r) => setTimeout(r, 500));
+        console.warn(`  ⚠ 验证码错误（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
+        if (attempt < MAX_CAPTCHA_ATTEMPTS) {
+          const delayMs = captchaRetryDelayMs(attempt);
+          console.warn(`  等待 ${delayMs / 1000} 秒后刷新重试`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
         continue;
       }
 
