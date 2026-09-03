@@ -417,6 +417,22 @@ async function visitPanel(cookieJar) {
 
   console.log(`  面板响应状态: ${res.status}`);
 
+  if (process.env.DEBUG_CHECKIN_PROTOCOL === "1") {
+    const endpointHints = [
+      ...res.body.matchAll(/["'`](\/[^"'`<>\s]*(?:captcha|checkin)[^"'`<>\s]*)["'`]/gi),
+    ].map((match) => match[1]);
+    const identifierHints = [
+      ...res.body.matchAll(/\b[A-Za-z_][\w-]*(?:captcha|checkin)[\w-]*\b/gi),
+    ].map((match) => match[0]);
+
+    console.log(
+      `  签到协议线索: ${JSON.stringify({
+        endpoints: [...new Set(endpointHints)],
+        identifiers: [...new Set(identifierHints)],
+      })}`,
+    );
+  }
+
   if (res.status === 401) {
     console.error("  ❌ 会话未认证：登录状态无效，签到无法继续");
     return false;
@@ -478,7 +494,7 @@ async function sendServerChanMessage(title, message) {
 
 async function main() {
   console.log("========== 豆奶(dounai.win) 自动签到 ==========");
-  console.log(`账号: ${EMAIL}`);
+  console.log(`账号配置: ${EMAIL ? "已设置" : "未设置"}`);
   console.log("");
 
   try {
