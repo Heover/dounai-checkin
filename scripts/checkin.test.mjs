@@ -29,6 +29,7 @@ test("识别签到端验证码错误与超时消息", () => {
 test("重复签到响应视为幂等成功", () => {
   assert.equal(isAlreadyCheckedIn("今天已经签到过了"), true);
   assert.equal(isAlreadyCheckedIn("今日已签到"), true);
+  assert.equal(isAlreadyCheckedIn("您今天已经续过命了。"), true);
   assert.equal(isAlreadyCheckedIn("验证码错误"), false);
 });
 

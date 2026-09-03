@@ -135,7 +135,7 @@ export function isCaptchaError(message = "") {
 }
 
 export function isAlreadyCheckedIn(message = "") {
-  return /(已(?:经)?签到|签到过了|重复签到)/.test(message);
+  return /(已(?:经)?签到|签到过了|重复签到|已(?:经)?续过命|续过命了)/.test(message);
 }
 
 /**
@@ -356,8 +356,9 @@ async function submitCheckin(cookieJar, captchaCode = null) {
       return { success: true, msg: result.msg, traffic, duration };
     }
 
-    console.log("  ❌ 签到响应异常：未检测到流量或时长信息");
-    return { success: false, msg: result.msg, traffic, duration, captchaError: false };
+    // ret=1 是接口的成功标志；重复签到等成功响应可能不再包含奖励明细。
+    console.log(`  ✅ 签到接口返回成功：${msg}`);
+    return { success: true, msg, traffic, duration };
   }
 
   const captchaError = isCaptchaError(msg);
