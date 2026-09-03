@@ -134,6 +134,10 @@ export function isCaptchaError(message = "") {
   return message.includes("验证码") && /(错误|超时|过期|失效)/.test(message);
 }
 
+export function isAlreadyCheckedIn(message = "") {
+  return /(已(?:经)?签到|签到过了|重复签到)/.test(message);
+}
+
 /**
  * 兼容旧的 4 位验证码与新的单数字加法验证码。
  * primaryText 为原有字母数字 OCR；mathText 为算术模式的补充 OCR。
@@ -146,12 +150,14 @@ export function resolveCaptchaValue(primaryText = "", mathText = "") {
 
   const primaryDigits = primary.match(/\d/g) || [];
   if (primaryDigits.length >= 2) {
-    return String(Number(primaryDigits[0]) + Number(primaryDigits[1]));
+    // 加号经常被 OCR 误读成 4、2 等数字（如 8+5 被读成 845），
+    // 因此单数字加法应取首尾两个数字作为操作数。
+    return String(Number(primaryDigits[0]) + Number(primaryDigits.at(-1)));
   }
 
   const mathDigits = mathText.match(/\d/g) || [];
   if (mathDigits.length >= 2) {
-    return String(Number(mathDigits[0]) + Number(mathDigits[1]));
+    return String(Number(mathDigits[0]) + Number(mathDigits.at(-1)));
   }
 
   // 两种 OCR 各识别到一个操作数时，合并计算。
@@ -332,6 +338,12 @@ async function submitCheckin(cookieJar, captchaCode = null) {
     result = { raw: res.body };
   }
 
+  const msg = result.msg || res.body || "未知错误";
+  if (isAlreadyCheckedIn(msg)) {
+    console.log(`  ✅ 今日已签到，无需重复操作：${msg}`);
+    return { success: true, msg, alreadyCheckedIn: true };
+  }
+
   if (result.ret === 1) {
     const trafficMatch = result.msg.match(/(\d+\.?\d*\s*[KMG]?B?)流量/);
     const durationMatch = result.msg.match(/延长\s*(\d+\.?\d*)\s*小时/);
@@ -348,7 +360,6 @@ async function submitCheckin(cookieJar, captchaCode = null) {
     return { success: false, msg: result.msg, traffic, duration, captchaError: false };
   }
 
-  const msg = result.msg || res.body || "未知错误";
   const captchaError = isCaptchaError(msg);
   console.log(`  ❌ 签到失败：${msg}`);
   return { success: false, msg, captchaError };
