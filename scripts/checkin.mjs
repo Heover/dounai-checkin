@@ -133,19 +133,61 @@ export function isCaptchaError(message = "") {
   return message.includes("验证码") && /(错误|超时|过期|失效)/.test(message);
 }
 
+/**
+ * 兼容旧的 4 位验证码与新的单数字加法验证码。
+ * primaryText 为原有字母数字 OCR；mathText 为算术模式的补充 OCR。
+ */
+export function resolveCaptchaValue(primaryText = "", mathText = "") {
+  const primary = primaryText.toLowerCase().replace(/[^0-9a-z]/g, "");
+
+  // 旧格式：完整的 4 位字母数字验证码。
+  if (primary.length === 4) return primary;
+
+  const primaryDigits = primary.match(/\d/g) || [];
+  if (primaryDigits.length >= 2) {
+    return String(Number(primaryDigits[0]) + Number(primaryDigits[1]));
+  }
+
+  const mathDigits = mathText.match(/\d/g) || [];
+  if (mathDigits.length >= 2) {
+    return String(Number(mathDigits[0]) + Number(mathDigits[1]));
+  }
+
+  // 两种 OCR 各识别到一个操作数时，合并计算。
+  if (primaryDigits.length === 1 && mathDigits.length === 1) {
+    return String(Number(primaryDigits[0]) + Number(mathDigits[0]));
+  }
+
+  return null;
+}
+
 // ========== 签到流程 ==========
 
 /**
  * 用 tesseract.js 识别验证码图片（data URL）
- * 预处理：放大 3 倍 + 反相（验证码为深底浅字，反相成黑底白字识别率最高）
- * 白名单 + 单行模式，输出清洗后的 4 位字符
+ * 兼容旧 4 位字符和新单数字加法题；主识别失败时使用算术模式补充识别。
  */
 async function recognizeCaptcha(worker, dataUrl) {
   const base64 = dataUrl.split(",")[1];
   const img = await Jimp.read(Buffer.from(base64, "base64"));
-  const processed = await img.clone().scale(3).invert().getBuffer("image/png");
-  const { data } = await worker.recognize(processed);
-  return data.text.replace(/[^0-9a-zA-Z]/g, "").slice(0, 4).toLowerCase();
+
+  await worker.setParameters({
+    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyz",
+    tessedit_pageseg_mode: PSM.SINGLE_LINE,
+  });
+  const primaryImage = await img.clone().scale(3).invert().getBuffer("image/png");
+  const { data: primaryData } = await worker.recognize(primaryImage);
+  const primaryText = primaryData.text.replace(/\s+/g, "");
+  const primaryValue = resolveCaptchaValue(primaryText);
+  if (primaryValue) return primaryValue;
+
+  await worker.setParameters({
+    tessedit_char_whitelist: "0123456789+=",
+    tessedit_pageseg_mode: PSM.SINGLE_LINE,
+  });
+  const mathImage = await img.clone().scale(4).invert().getBuffer("image/png");
+  const { data: mathData } = await worker.recognize(mathImage);
+  return resolveCaptchaValue(primaryText, mathData.text.replace(/\s+/g, ""));
 }
 
 async function createCaptchaWorker() {
@@ -180,8 +222,8 @@ async function fetchCaptcha(worker, cookieJar) {
   }
 
   const captchaCode = await recognizeCaptcha(worker, imageMatch[1]);
-  if (captchaCode.length !== 4) {
-    throw new Error(`验证码识别结果异常（${captchaCode || "空"}）`);
+  if (!captchaCode) {
+    throw new Error("验证码识别结果异常（无法解析字符或算术题）");
   }
 
   return captchaCode;
