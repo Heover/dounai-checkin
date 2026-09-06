@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Jimp } from "jimp";
+import * as checkinModule from "./checkin.mjs";
 
 import {
   captchaRetryDelayMs,
@@ -44,6 +46,45 @@ test("重复签到响应视为幂等成功", () => {
 test("保留旧式 4 位验证码", () => {
   assert.equal(resolveCaptchaValue("8578"), "8578");
   assert.equal(resolveCaptchaValue(" 90-50 "), "9050");
+});
+
+test("明确的算式优先于误识别的四位字符", () => {
+  assert.equal(resolveCaptchaValue("8s2s", "8+2="), "10");
+  assert.equal(resolveCaptchaValue("543s", "5+3="), "8");
+});
+
+test("当前算术验证码支持减法及乘法，不再默认相加", () => {
+  assert.equal(resolveCaptchaValue("412", "4-1="), "3");
+  assert.equal(resolveCaptchaValue("7x8z", "7x8="), "56");
+  assert.equal(resolveCaptchaValue("", "9 × 5 ="), "45");
+  assert.equal(resolveCaptchaValue("", "2-8="), "-6");
+});
+
+test("OCR 在字符模式产生四位结果后仍运行算术模式", async () => {
+  const png = await new Jimp({ width: 140, height: 44, color: 0xffffffff }).getBuffer("image/png");
+  let whitelist;
+  const calls = [];
+  const worker = {
+    async setParameters(params) { whitelist = params.tessedit_char_whitelist; },
+    async recognize() {
+      calls.push(whitelist);
+      return { data: { text: whitelist.includes("a") ? "8s2s" : "8+2=" } };
+    },
+  };
+  assert.equal(await checkinModule.recognizeCaptcha(worker, `data:image/png;base64,${png.toString("base64")}`), "10");
+  assert.ok(calls.some((value) => value.includes("+") && value.includes("=")));
+});
+
+test("OCR 字符集保留减号和乘号", async () => {
+  const png = await new Jimp({ width: 140, height: 44, color: 0xffffffff }).getBuffer("image/png");
+  let whitelist;
+  const worker = {
+    async setParameters(params) { whitelist = params.tessedit_char_whitelist; },
+    async recognize() {
+      return { data: { text: whitelist.includes("-") && whitelist.includes("*") ? "4-1=" : "41" } };
+    },
+  };
+  assert.equal(await checkinModule.recognizeCaptcha(worker, `data:image/png;base64,${png.toString("base64")}`), "3");
 });
 
 test("计算新式单数字加法验证码", () => {

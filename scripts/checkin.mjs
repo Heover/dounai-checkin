@@ -145,10 +145,19 @@ export function captchaRetryDelayMs(attempt) {
 }
 
 /**
- * 兼容旧的 4 位验证码与新的单数字加法验证码。
+ * 兼容旧的 4 位验证码与单数字加减乘验证码。
  * primaryText 为原有字母数字 OCR；mathText 为算术模式的补充 OCR。
  */
 export function resolveCaptchaValue(primaryText = "", mathText = "") {
+  // 保留运算符解析完整算式，避免 8+2= 被字符模式读成 8s2s 后直接提交。
+  for (const text of [mathText, primaryText]) {
+    const expression = text.replace(/\s+/g, "").match(/^(\d)([+\-xX×*])(\d)=?$/);
+    if (expression) {
+      const [, left, operator, right] = expression;
+      const a = Number(left), b = Number(right);
+      return String(operator === "+" ? a + b : operator === "-" ? a - b : a * b);
+    }
+  }
   const primary = primaryText.toLowerCase().replace(/[^0-9a-z]/g, "");
 
   // 旧格式：完整的 4 位字母数字验证码。
@@ -178,9 +187,9 @@ export function resolveCaptchaValue(primaryText = "", mathText = "") {
 
 /**
  * 用 tesseract.js 识别验证码图片（data URL）
- * 兼容旧 4 位字符和新单数字加法题；主识别失败时使用算术模式补充识别。
+ * 兼容旧 4 位字符和加减乘题；两种模式均识别，优先采用明确算式。
  */
-async function recognizeCaptcha(worker, dataUrl) {
+export async function recognizeCaptcha(worker, dataUrl) {
   const base64 = dataUrl.split(",")[1];
   const img = await Jimp.read(Buffer.from(base64, "base64"));
 
@@ -191,14 +200,18 @@ async function recognizeCaptcha(worker, dataUrl) {
   const primaryImage = await img.clone().scale(3).invert().getBuffer("image/png");
   const { data: primaryData } = await worker.recognize(primaryImage);
   const primaryText = primaryData.text.replace(/\s+/g, "");
-  const primaryValue = resolveCaptchaValue(primaryText);
-  if (primaryValue) return primaryValue;
-
   await worker.setParameters({
-    tessedit_char_whitelist: "0123456789+=",
+    tessedit_char_whitelist: "0123456789+-xX*=",
     tessedit_pageseg_mode: PSM.SINGLE_LINE,
   });
-  const mathImage = await img.clone().scale(4).invert().getBuffer("image/png");
+  // 当前题图为深色背景、亮色字符；先滤去深色干扰线，再放大识别。
+  const cleaned = img.clone();
+  cleaned.scan((x, y, index) => {
+    const pixels = cleaned.bitmap.data;
+    const value = Math.max(pixels[index], pixels[index + 1], pixels[index + 2]) >= 140 ? 0 : 255;
+    pixels[index] = pixels[index + 1] = pixels[index + 2] = value;
+  });
+  const mathImage = await cleaned.scale(4).getBuffer("image/png");
   const { data: mathData } = await worker.recognize(mathImage);
   return resolveCaptchaValue(primaryText, mathData.text.replace(/\s+/g, ""));
 }
