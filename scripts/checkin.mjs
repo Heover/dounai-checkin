@@ -139,6 +139,11 @@ export function isAlreadyCheckedIn(message = "") {
   return /(已(?:经)?签到|签到过了|重复签到|已(?:经)?续过命|续过命了)/.test(message);
 }
 
+export function isCheckinBlocked(result) {
+  return result?.is_blocked === true ||
+    /检测到签到脚本|签到机会.*锁定/.test(result?.msg || "");
+}
+
 export function captchaRetryDelayMs(attempt) {
   const index = Math.min(Math.max(Number(attempt) || 1, 1), CAPTCHA_RETRY_DELAYS_MS.length) - 1;
   return CAPTCHA_RETRY_DELAYS_MS[index];
@@ -339,9 +344,9 @@ async function login() {
   return null;
 }
 
-async function submitCheckin(cookieJar, captchaCode = null) {
+export async function submitCheckin(cookieJar, captchaCode = null, sendRequest = request) {
   const body = captchaCode ? stringify({ captcha_code: captchaCode }) : undefined;
-  const res = await request("POST", `${BASE_URL}/user/checkin`, {
+  const res = await sendRequest("POST", `${BASE_URL}/user/checkin`, {
     ...(body ? { body } : {}),
     headers: {
       Cookie: cookieJar.toHeader(),
@@ -367,6 +372,12 @@ async function submitCheckin(cookieJar, captchaCode = null) {
   }
 
   const msg = result.msg || res.body || "未知错误";
+  // 服务端锁定是终止状态，优先于成功文案及验证码重试判断。
+  if (isCheckinBlocked(result)) {
+    console.error(`  ⛔ 签到已锁定，停止请求：${msg}`);
+    return { success: false, msg, blocked: true, captchaError: false };
+  }
+
   if (isAlreadyCheckedIn(msg)) {
     console.log(`  ✅ 今日已签到，无需重复操作：${msg}`);
     return { success: true, msg, alreadyCheckedIn: true };
@@ -394,17 +405,21 @@ async function submitCheckin(cookieJar, captchaCode = null) {
   return { success: false, msg, captchaError };
 }
 
-async function checkin(cookieJar) {
+export async function checkin(cookieJar, {
+  submit = submitCheckin,
+  createWorker = createCaptchaWorker,
+  getCaptcha = fetchCaptcha,
+} = {}) {
   console.log("正在签到 ...");
 
-  let result = await submitCheckin(cookieJar);
-  if (result.success || !result.captchaError) return result;
+  let result = await submit(cookieJar);
+  if (result.blocked || result.success || !result.captchaError) return result;
 
   console.warn("  ⚠ 签到端验证码无效，刷新验证码后重试");
 
   let worker;
   try {
-    worker = await createCaptchaWorker();
+    worker = await createWorker();
   } catch (err) {
     console.error(`  ❌ 无法初始化签到验证码 OCR：${err.message}`);
     return result;
@@ -414,15 +429,15 @@ async function checkin(cookieJar) {
     for (let attempt = 1; attempt <= MAX_CAPTCHA_ATTEMPTS; attempt++) {
       let captchaCode;
       try {
-        captchaCode = await fetchCaptcha(worker, cookieJar);
+        captchaCode = await getCaptcha(worker, cookieJar);
       } catch (err) {
         console.warn(`  ⚠ 获取或识别签到验证码失败：${err.message}（${attempt}/${MAX_CAPTCHA_ATTEMPTS}）`);
         continue;
       }
 
       console.log(`  第 ${attempt} 次签到验证码尝试，识别结果: ${captchaCode}`);
-      result = await submitCheckin(cookieJar, captchaCode);
-      if (result.success || !result.captchaError) return result;
+      result = await submit(cookieJar, captchaCode);
+      if (result.blocked || result.success || !result.captchaError) return result;
 
       if (attempt < MAX_CAPTCHA_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -548,8 +563,10 @@ async function main() {
       pushTitle = "✅ 豆奶签到成功";
       pushMessage = `${result.msg}`;
     } else {
-      pushTitle = "❌ 豆奶签到失败";
-      pushMessage = `${result.msg}`;
+      pushTitle = result.blocked ? "⛔ 豆奶签到已锁定" : "❌ 豆奶签到失败";
+      pushMessage = result.blocked
+        ? `${result.msg}\n本次请求已停止，请通过网站官方途径确认解锁条件。`
+        : `${result.msg}`;
     }
     await sendServerChanMessage(pushTitle, pushMessage);
 

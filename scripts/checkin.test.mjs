@@ -36,6 +36,67 @@ test("识别签到端验证码错误与超时消息", () => {
   assert.equal(isCaptchaError("会话未认证，登录状态无效"), false);
 });
 
+test("服务端锁定优先于验证码错误或成功文案", async () => {
+  const responses = [
+    { ret: 0, is_blocked: true, msg: "检测到签到脚本，今日签到机会已锁定" },
+    { ret: 0, is_blocked: true, msg: "验证码错误或已超时，请刷新重试" },
+    { ret: 1, is_blocked: true, msg: "今日已签到" },
+    { ret: 0, msg: "检测到签到脚本，今日签到机会已锁定" },
+  ];
+  for (const response of responses) {
+    const result = await checkinModule.submitCheckin(new CookieJar(), null, async () => ({
+      status: 200,
+      cookies: [],
+      body: JSON.stringify(response),
+    }));
+    assert.deepEqual(result, {
+      success: false, msg: response.msg, blocked: true, captchaError: false,
+    });
+  }
+  assert.equal(checkinModule.isCheckinBlocked({ is_blocked: false, msg: "验证码错误" }), false);
+});
+
+test("首次签到被锁定后不再请求验证码或初始化 OCR", async () => {
+  let submissions = 0;
+  let workersCreated = 0;
+  let captchaRequests = 0;
+  const result = await checkinModule.checkin(new CookieJar(), {
+    async submit() {
+      submissions++;
+      return { success: false, blocked: true, captchaError: true };
+    },
+    async createWorker() {
+      workersCreated++;
+      return { async terminate() {} };
+    },
+    async getCaptcha() { captchaRequests++; return "5"; },
+  });
+  assert.equal(result.blocked, true);
+  assert.equal(submissions, 1);
+  assert.equal(workersCreated, 0);
+  assert.equal(captchaRequests, 0);
+});
+
+test("重试中收到锁定立即停止并释放 OCR", async () => {
+  let submissions = 0;
+  let captchaRequests = 0;
+  let terminated = 0;
+  const result = await checkinModule.checkin(new CookieJar(), {
+    async submit() {
+      submissions++;
+      return { success: false, captchaError: true, blocked: submissions > 1 };
+    },
+    async createWorker() {
+      return { async terminate() { terminated++; } };
+    },
+    async getCaptcha() { captchaRequests++; return "5"; },
+  });
+  assert.equal(result.blocked, true);
+  assert.equal(submissions, 2);
+  assert.equal(captchaRequests, 1);
+  assert.equal(terminated, 1);
+});
+
 test("重复签到响应视为幂等成功", () => {
   assert.equal(isAlreadyCheckedIn("今天已经签到过了"), true);
   assert.equal(isAlreadyCheckedIn("今日已签到"), true);
