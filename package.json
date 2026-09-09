@@ -1,10 +1,11 @@
 {
   "name": "dounai-checkin",
   "version": "1.0.0",
-  "description": "dounai.win 自动签到 - 每日自动登录获取免费流量",
+  "description": "dounai.win 全自动页面签到与 DeepSeek 视觉验证码识别",
   "type": "module",
   "scripts": {
-    "checkin": "node scripts/checkin.mjs",
+    "checkin": "node scripts/checkin-browser.mjs",
+    "checkin:legacy": "node scripts/checkin.mjs",
     "test": "node --test scripts/*.test.mjs"
   },
   "keywords": [
@@ -15,6 +16,7 @@
   "license": "MIT",
   "dependencies": {
     "jimp": "^1.6.1",
+    "playwright-core": "^1.63.0",
     "tesseract.js": "^7.0.0"
   }
 }

@@ -1,10 +1,17 @@
-name: 豆奶自动签到
+name: 豆奶全自动页面签到
 
 on:
   schedule:
     # 每天北京时间 00:07 (UTC 16:07)
     - cron: "7 16 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dounai-checkin
+  cancel-in-progress: false
 
 jobs:
   main:
@@ -17,11 +24,17 @@ jobs:
         with:
           node-version: "20"
       - name: 安装依赖
-        run: npm install
+        run: npm ci
+      - name: 运行测试
+        run: npm test
+      - name: 安装浏览器
+        run: npx playwright-core install --with-deps chromium
       - name: 执行签到
         env:
           DOUNAI_EMAIL: ${{ secrets.DOUNAI_EMAIL }}
           DOUNAI_PASSWD: ${{ secrets.DOUNAI_PASSWD }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CHECKIN_BROWSER: chromium
           SERVER_UID: ${{ secrets.SERVER_UID }}
           SERVER_KEY: ${{ secrets.SERVER_KEY }}
-        run: node scripts/checkin.mjs
+        run: xvfb-run --auto-servernum node scripts/checkin-browser.mjs

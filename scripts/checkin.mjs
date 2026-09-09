@@ -144,6 +144,30 @@ export function isCheckinBlocked(result) {
     /检测到签到脚本|签到机会.*锁定/.test(result?.msg || "");
 }
 
+/** HTTP 状态及 ret=1 本身不足以证明签到入账，必须检查业务消息。 */
+export function classifyCheckinResult(result, status = 200) {
+  const msg = typeof result?.msg === "string" && result.msg.trim()
+    ? result.msg.trim() : "签到响应缺少明确结果";
+  if (isCheckinBlocked(result)) {
+    return { success: false, msg, blocked: true, captchaError: false };
+  }
+  if (status < 200 || status >= 300) {
+    return { success: false, msg: `签到请求失败（HTTP ${status}）`, captchaError: false };
+  }
+  if (/刷新.*(?:重试|再试)/.test(msg) && !isCaptchaError(msg)) {
+    return { success: false, msg, refreshRequired: true, captchaError: false };
+  }
+  if (isAlreadyCheckedIn(msg)) {
+    return { success: true, msg, alreadyCheckedIn: true };
+  }
+  const traffic = msg.match(/(\d+\.?\d*\s*[KMG]?B?)流量/)?.[1]?.replace(/\s+/g, "");
+  const duration = msg.match(/延长\s*(\d+\.?\d*)\s*小时/)?.[1];
+  if (result?.ret === 1 && traffic && duration) {
+    return { success: true, msg, traffic, duration: `${duration} 小时` };
+  }
+  return { success: false, msg, captchaError: isCaptchaError(msg) };
+}
+
 export function captchaRetryDelayMs(attempt) {
   const index = Math.min(Math.max(Number(attempt) || 1, 1), CAPTCHA_RETRY_DELAYS_MS.length) - 1;
   return CAPTCHA_RETRY_DELAYS_MS[index];
@@ -371,38 +395,9 @@ export async function submitCheckin(cookieJar, captchaCode = null, sendRequest =
     result = { raw: res.body };
   }
 
-  const msg = result.msg || res.body || "未知错误";
-  // 服务端锁定是终止状态，优先于成功文案及验证码重试判断。
-  if (isCheckinBlocked(result)) {
-    console.error(`  ⛔ 签到已锁定，停止请求：${msg}`);
-    return { success: false, msg, blocked: true, captchaError: false };
-  }
-
-  if (isAlreadyCheckedIn(msg)) {
-    console.log(`  ✅ 今日已签到，无需重复操作：${msg}`);
-    return { success: true, msg, alreadyCheckedIn: true };
-  }
-
-  if (result.ret === 1) {
-    const trafficMatch = result.msg.match(/(\d+\.?\d*\s*[KMG]?B?)流量/);
-    const durationMatch = result.msg.match(/延长\s*(\d+\.?\d*)\s*小时/);
-
-    const traffic = trafficMatch ? trafficMatch[1].replace(/\s+/g, "") : null;
-    const duration = durationMatch ? `${durationMatch[1]} 小时` : null;
-
-    if (traffic && duration) {
-      console.log(`  ✅ 签到成功！${result.msg}`);
-      return { success: true, msg: result.msg, traffic, duration };
-    }
-
-    // ret=1 是接口的成功标志；重复签到等成功响应可能不再包含奖励明细。
-    console.log(`  ✅ 签到接口返回成功：${msg}`);
-    return { success: true, msg, traffic, duration };
-  }
-
-  const captchaError = isCaptchaError(msg);
-  console.log(`  ❌ 签到失败：${msg}`);
-  return { success: false, msg, captchaError };
+  const outcome = classifyCheckinResult(result, res.status);
+  console.log(`  ${outcome.success ? "✅" : outcome.blocked ? "⛔" : "❌"} ${outcome.msg}`);
+  return outcome;
 }
 
 export async function checkin(cookieJar, {
@@ -485,7 +480,7 @@ async function visitPanel(cookieJar) {
  * 通过 Server酱3 发送消息到微信
  * API: POST https://{uid}.push.ft07.com/send/{sendkey}.send
  */
-async function sendServerChanMessage(title, message) {
+export async function sendServerChanMessage(title, message) {
   const uid = process.env.SERVER_UID;
   const sendkey = process.env.SERVER_KEY;
 

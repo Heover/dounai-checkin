@@ -5,11 +5,30 @@ import * as checkinModule from "./checkin.mjs";
 
 import {
   captchaRetryDelayMs,
+  classifyCheckinResult,
   CookieJar,
   isAlreadyCheckedIn,
   isCaptchaError,
   resolveCaptchaValue,
 } from "./checkin.mjs";
+
+test("刷新提示和不明确的 ret=1 响应不能判成功", () => {
+  assert.deepEqual(classifyCheckinResult({ ret: 1, msg: "请刷新页面后重试。" }), {
+    success: false, msg: "请刷新页面后重试。", refreshRequired: true, captchaError: false,
+  });
+  for (const body of [{ ret: 1 }, { ret: 1, msg: "操作完成" }, null]) {
+    assert.equal(classifyCheckinResult(body).success, false);
+  }
+});
+
+test("明确奖励及已签到响应成功，但 HTTP 错误不成功", () => {
+  const reward = { ret: 1, msg: "获得了 257 MB流量和1个豆丁，账号有效期及等级 1 时长延长 1.5 小时。" };
+  assert.deepEqual(classifyCheckinResult(reward), {
+    success: true, msg: reward.msg, traffic: "257MB", duration: "1.5 小时",
+  });
+  assert.equal(classifyCheckinResult(reward, 503).success, false);
+  assert.equal(classifyCheckinResult({ ret: 0, msg: "今天已经签到过了" }).alreadyCheckedIn, true);
+});
 
 test("登录验证码重试采用有上限的递增退避", () => {
   assert.equal(captchaRetryDelayMs(1), 1000);
