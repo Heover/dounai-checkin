@@ -28,13 +28,13 @@ jobs:
       - name: 运行测试
         run: npm test
       - name: 安装浏览器
-        run: npx playwright-core install --with-deps chromium
+        run: npx playwright-core install --with-deps chrome
       - name: 执行签到
         env:
           DOUNAI_EMAIL: ${{ secrets.DOUNAI_EMAIL }}
           DOUNAI_PASSWD: ${{ secrets.DOUNAI_PASSWD }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          CHECKIN_BROWSER: chromium
+          CHECKIN_BROWSER: chrome
           SERVER_UID: ${{ secrets.SERVER_UID }}
           SERVER_KEY: ${{ secrets.SERVER_KEY }}
         run: xvfb-run --auto-servernum node scripts/checkin-browser.mjs

@@ -21,6 +21,14 @@ const HELP = `豆奶全自动页面签到
 
 浏览器使用独立临时会话，关闭后不保存密码或登录 Cookie。`;
 
+export function describeLaunchError(error, channel) {
+  const detail = String(error?.message || "");
+  if (/sandbox|namespace|Operation not permitted/i.test(detail)) return `${channel} 浏览器沙箱无法初始化；未禁用沙箱，停止运行。`;
+  if (/X server|DISPLAY|xvfb/i.test(detail)) return `${channel} 缺少可用显示环境，请检查 Xvfb。`;
+  if (/executable.*(?:exist|found)|distribution.*not found/i.test(detail)) return `${channel} 可执行文件不存在，请安装对应浏览器。`;
+  return `无法启动 ${channel}，请确认已安装浏览器并执行 npm install。`;
+}
+
 export async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
     console.log(HELP);
@@ -55,7 +63,7 @@ export async function main() {
   } catch (error) {
     // Playwright errors may include form values or private URLs in call logs.
     outcome = { success: false, msg: error instanceof CaptchaVisionError ? error.message : stage.startsWith("配置") ? stage : stage === "启动浏览器"
-      ? `无法启动 ${channel}，请确认已安装浏览器并执行 npm install。`
+      ? describeLaunchError(error, channel)
       : "自动页面操作或验证码识别失败，未确认签到成功。" };
   }
 

@@ -43,7 +43,7 @@ npm run checkin
 ## GitHub Actions
 
 仓库或仓库可访问的组织 Secrets 中配置账号密码、`DEEPSEEK_API_KEY` 及通知凭据。
-组织 Secret 必须授权此仓库访问。工作流安装 Chromium，使用 Xvfb 虚拟显示运行有界面浏览器，
+组织 Secret 必须授权此仓库访问。工作流安装官方 Chrome，使用 Xvfb 虚拟显示运行有界面浏览器，
 自动识别验证码，不需要连接桌面。并发组避免定时和手动运行同时操作账号。
 
 缺少配置、API 异常或网页流程失败时以非零退出码结束，并在通知已配置时推送失败。
