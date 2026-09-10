@@ -2,6 +2,21 @@ import { classifyCheckinResult, isCaptchaError, isCheckinBlocked } from "./check
 import { solveCaptchaImage } from "./captcha-vision.mjs";
 
 export const SITE_URL = "https://dounai.win";
+export class PageFlowError extends Error {}
+
+export async function captchaDiagnostics(page, selector) {
+  try {
+    return await page.locator(selector).evaluate((box) => ({
+      boxVisible: !!(box.getBoundingClientRect().width && box.getBoundingClientRect().height),
+      media: Array.from(box.querySelectorAll("img, svg, canvas")).map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        visible: !!(el.getBoundingClientRect().width && el.getBoundingClientRect().height) && getComputedStyle(el).visibility !== "hidden",
+        width: el.getBoundingClientRect().width,
+        height: el.getBoundingClientRect().height,
+      })),
+    }));
+  } catch { return { unavailable: true }; }
+}
 
 /** Observe the webpage's own request; never forge/replay a POST or hidden token. */
 export function observePost(page, pathname, { timeoutMs = 30_000 } = {}) {
@@ -30,11 +45,17 @@ export function observePost(page, pathname, { timeoutMs = 30_000 } = {}) {
   return { result, cancel: () => complete({ error: "已停止等待页面响应" }) };
 }
 
-async function capture(page, selector) {
+export async function capture(page, selector, log = console.log) {
   const box = page.locator(selector);
-  await box.locator("img, svg").first().waitFor({ state: "visible" });
-  // Only the captcha box is transmitted, never a full page/sensitive form.
-  return box.screenshot({ type: "png", animations: "disabled" });
+  try {
+    // Canvas-rendered images and hidden placeholder elements must not block capture.
+    await box.locator("img, svg, canvas").filter({ visible: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+    // Only the captcha box is transmitted, never a full page/sensitive form.
+    return await box.screenshot({ type: "png", animations: "disabled", timeout: 10_000 });
+  } catch {
+    log(`验证码区域诊断 ${selector}: ${JSON.stringify(await captchaDiagnostics(page, selector))}`);
+    throw new PageFlowError(`验证码图片未就绪或截图失败（${selector}），未提交`);
+  }
 }
 
 /** Refresh through the visible page control, then wait for its actual GET to finish. */
@@ -49,17 +70,23 @@ async function refreshImage(page, control) {
   if (!await handled) throw new Error("页面刷新验证码失败");
 }
 
-async function submitImage(page, { box, input, button, pathname, solveImage, timeoutMs }) {
-  const png = await capture(page, box);
+async function submitImage(page, { box, input, button, pathname, solveImage, timeoutMs, log }) {
+  const png = await capture(page, box, log);
+  log("验证码图片已截取，调用 DeepSeek 识别。");
   const answer = await solveImage(png);
-  if (!/^-?\d{1,3}$/.test(answer)) throw new Error("验证码答案格式异常");
+  if (!/^-?\d{1,3}$/.test(answer)) throw new PageFlowError("验证码答案格式异常");
   // Image must still be the same after the API call; never submit a stale answer.
-  if (!png.equals(await capture(page, box))) throw new Error("识别期间验证码已改变，已停止提交");
+  if (!png.equals(await capture(page, box, log))) throw new PageFlowError("识别期间验证码已改变，已停止提交");
+  log("验证码复核通过，准备填写并提交。");
   const watcher = observePost(page, pathname, { timeoutMs });
   try {
-    await page.locator(input).fill(answer);
+    try { await page.locator(input).fill(answer); }
+    catch { throw new PageFlowError(`验证码输入框无法填写（${input}），未确认提交`); }
     // Login auto-submits on input; explicit click there would risk double-submit.
-    if (button) await page.locator(button).click();
+    if (button) {
+      try { await page.locator(button).click(); }
+      catch { throw new PageFlowError(`签到确认按钮无法点击（${button}），未确认提交`); }
+    }
     return await watcher.result;
   } finally { watcher.cancel(); }
 }
@@ -81,7 +108,7 @@ export async function runBrowserCheckin(page, {
       await refreshImage(page, page.locator("#login-captcha-box"));
       log(`自动识别登录验证码（${attempt + 1}/3）`);
       const reply = await submitImage(page, { box: "#login-captcha-box", input: "#captcha_code",
-        pathname: "/auth/login", solveImage, timeoutMs });
+        pathname: "/auth/login", solveImage, timeoutMs, log });
       if (reply.error) return { success: false, msg: reply.error };
       if (isCheckinBlocked(reply.body)) return { success: false, blocked: true, msg: "登录被站点锁定，停止重试" };
       if (reply.status === 200 && reply.body?.ret === 1) { loggedIn = true; break; }
@@ -106,13 +133,14 @@ export async function runBrowserCheckin(page, {
         return { success: true, alreadyCheckedIn: true, msg: "新加载的页面显示今日已签到" };
       }
       await page.getByRole("button", { name: /立即续命/ }).click();
+      log(`签到弹窗图片结构: ${JSON.stringify(await captchaDiagnostics(page, "#checkin-captcha-box"))}`);
       needOpen = false;
     } else {
       await refreshImage(page, page.locator("#checkin-refresh-btn"));
     }
     log(`自动识别签到验证码（${attempt + 1}/3）`);
     const reply = await submitImage(page, { box: "#checkin-captcha-box", input: "#checkin_captcha_code",
-      button: "#checkin-submit-btn", pathname: "/user/checkin", solveImage, timeoutMs });
+      button: "#checkin-submit-btn", pathname: "/user/checkin", solveImage, timeoutMs, log });
     if (reply.error) return { success: false, msg: reply.error };
     const outcome = classifyCheckinResult(reply.body, reply.status);
     if (outcome.blocked || outcome.success) return outcome;

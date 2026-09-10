@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
+import { capture, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
 
 const reward = { ret: 1, msg: "获得了 257 MB流量和1个豆丁，时长延长 1.5 小时。" };
 const blocked = { ret: 0, is_blocked: true, msg: "今日签到机会已锁定" };
@@ -56,7 +56,7 @@ class FakePage extends EventEmitter {
   locator(selector) {
     const page = this;
     return {
-      locator() { return this; }, first() { return this; }, async waitFor() {},
+      locator() { return this; }, filter() { return this; }, first() { return this; }, async waitFor() {},
       async screenshot() { return page.image; },
       async fill(value) {
         page.fills.push([selector, value]);
@@ -86,6 +86,31 @@ class FakePage extends EventEmitter {
     };
   }
 }
+test("验证码截图支持 canvas，并先排除隐藏占位图片", async () => {
+  const calls = [];
+  const media = {
+    filter(value) { calls.push(["filter", value]); return this; },
+    first() { calls.push(["first"]); return this; },
+    async waitFor() {},
+  };
+  const page = { locator: () => ({
+    locator(selector) { calls.push(["selector", selector]); return media; },
+    screenshot: async () => Buffer.from("captcha-only"),
+  }) };
+  assert.equal((await capture(page, "#captcha")).toString(), "captcha-only");
+  assert.deepEqual(calls, [["selector", "img, svg, canvas"], ["filter", { visible: true }], ["first"]]);
+});
+
+test("截图超时输出明确阶段，不泄露底层错误或私密 URL", async () => {
+  const page = { locator: () => ({
+    locator() { return this; }, filter() { return this; }, first() { return this; },
+    async waitFor() { throw new Error("private-url-and-token"); },
+    async evaluate() { return { boxVisible: false, media: [] }; },
+  }) };
+  const logs = [];
+  await assert.rejects(capture(page, "#captcha", (line) => logs.push(line)), /图片未就绪/);
+  assert.ok(!logs.join("").includes("private-url"));
+});
 test("全自动登录和签到，无人工回调，输入登录验证码只提交一次", async () => {
   const page = new FakePage([reward], { loggedIn: false });
   assert.equal((await runBrowserCheckin(page, options)).success, true);

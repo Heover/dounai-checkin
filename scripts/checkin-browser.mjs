@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBrowserCheckin } from "./browser-flow.mjs";
+import { runBrowserCheckin, PageFlowError } from "./browser-flow.mjs";
 import { sendServerChanMessage } from "./checkin.mjs";
 import { CaptchaVisionError } from "./captcha-vision.mjs";
 
@@ -62,7 +62,7 @@ export async function main() {
     });
   } catch (error) {
     // Playwright errors may include form values or private URLs in call logs.
-    outcome = { success: false, msg: error instanceof CaptchaVisionError ? error.message : stage.startsWith("配置") ? stage : stage === "启动浏览器"
+    outcome = { success: false, msg: error instanceof CaptchaVisionError || error instanceof PageFlowError ? error.message : stage.startsWith("配置") ? stage : stage === "启动浏览器"
       ? describeLaunchError(error, channel)
       : "自动页面操作或验证码识别失败，未确认签到成功。" };
   }
