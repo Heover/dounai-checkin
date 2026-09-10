@@ -57,6 +57,7 @@ class FakePage extends EventEmitter {
     const page = this;
     return {
       locator() { return this; }, filter() { return this; }, first() { return this; }, async waitFor() {},
+      async evaluate() { return { ready: true }; },
       async screenshot() { return page.image; },
       async fill(value) {
         page.fills.push([selector, value]);
@@ -86,19 +87,15 @@ class FakePage extends EventEmitter {
     };
   }
 }
-test("验证码截图支持 canvas，并先排除隐藏占位图片", async () => {
-  const calls = [];
-  const media = {
-    filter(value) { calls.push(["filter", value]); return this; },
-    first() { calls.push(["first"]); return this; },
-    async waitFor() {},
-  };
+test("验证码截图支持无 img 子元素的背景图，不依赖固定子标签", async () => {
+  let inspected = 0;
   const page = { locator: () => ({
-    locator(selector) { calls.push(["selector", selector]); return media; },
+    async waitFor() {},
+    async evaluate() { inspected++; return { ready: true, backgroundImage: true, media: [] }; },
     screenshot: async () => Buffer.from("captcha-only"),
   }) };
   assert.equal((await capture(page, "#captcha")).toString(), "captcha-only");
-  assert.deepEqual(calls, [["selector", "img, svg, canvas"], ["filter", { visible: true }], ["first"]]);
+  assert.equal(inspected, 1);
 });
 
 test("截图超时输出明确阶段，不泄露底层错误或私密 URL", async () => {

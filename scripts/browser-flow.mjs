@@ -4,17 +4,32 @@ import { solveCaptchaImage } from "./captcha-vision.mjs";
 export const SITE_URL = "https://dounai.win";
 export class PageFlowError extends Error {}
 
+// Executed inside the page; returns structural facts only, never image URLs or text.
+export function inspectCaptchaBox(box) {
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return !!(rect.width && rect.height) && style.visibility !== "hidden" && style.display !== "none";
+  };
+  const nodes = [box, ...box.querySelectorAll("*")];
+  const media = nodes.filter((el) => /^(IMG|SVG|CANVAS)$/i.test(el.tagName)).map((el) => ({
+    tag: el.tagName.toLowerCase(), visible: visible(el),
+    loaded: el.tagName.toLowerCase() !== "img" || (el.complete && el.naturalWidth > 0),
+  }));
+  const backgroundImage = nodes.some((el) => visible(el) && /url\(/i.test(getComputedStyle(el).backgroundImage));
+  const text = box.textContent || "";
+  const errorKind = /失败|错误/.test(text) ? "load-error" : /加载|稍候/.test(text) ? "loading" : null;
+  const textMath = /[\d零〇一二两三四五六七八九壹贰叁肆伍陆柒捌玖]\s*(?:[+*/×÷-]|加|减|乘|除)/.test(text);
+  const boxVisible = visible(box);
+  return { boxVisible, media, backgroundImage, textMath, errorKind,
+    childTags: [...new Set(nodes.slice(1).map((el) => el.tagName.toLowerCase()))],
+    ready: boxVisible && !errorKind && (backgroundImage || textMath || media.some((el) => el.visible && el.loaded)),
+  };
+}
+
 export async function captchaDiagnostics(page, selector) {
   try {
-    return await page.locator(selector).evaluate((box) => ({
-      boxVisible: !!(box.getBoundingClientRect().width && box.getBoundingClientRect().height),
-      media: Array.from(box.querySelectorAll("img, svg, canvas")).map((el) => ({
-        tag: el.tagName.toLowerCase(),
-        visible: !!(el.getBoundingClientRect().width && el.getBoundingClientRect().height) && getComputedStyle(el).visibility !== "hidden",
-        width: el.getBoundingClientRect().width,
-        height: el.getBoundingClientRect().height,
-      })),
-    }));
+    return await page.locator(selector).evaluate(inspectCaptchaBox);
   } catch { return { unavailable: true }; }
 }
 
@@ -48,8 +63,14 @@ export function observePost(page, pathname, { timeoutMs = 30_000 } = {}) {
 export async function capture(page, selector, log = console.log) {
   const box = page.locator(selector);
   try {
-    // Canvas-rendered images and hidden placeholder elements must not block capture.
-    await box.locator("img, svg, canvas").filter({ visible: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+    await box.waitFor({ state: "visible", timeout: 10_000 });
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const state = await box.evaluate(inspectCaptchaBox);
+      if (state.ready) break;
+      if (state.errorKind === "load-error" || Date.now() >= deadline) throw new Error("captcha not ready");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     // Only the captcha box is transmitted, never a full page/sensitive form.
     return await box.screenshot({ type: "png", animations: "disabled", timeout: 10_000 });
   } catch {
