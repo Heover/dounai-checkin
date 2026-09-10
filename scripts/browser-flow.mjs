@@ -35,7 +35,7 @@ export async function captchaDiagnostics(page, selector) {
 }
 
 /** Observe the webpage's own request; never forge/replay a POST or hidden token. */
-export function observePost(page, pathname, { timeoutMs = 30_000 } = {}) {
+export function observePost(page, pathname, { timeoutMs = 30_000, method = "POST" } = {}) {
   let finish;
   let settled = false;
   const result = new Promise((resolve) => { finish = resolve; });
@@ -52,7 +52,8 @@ export function observePost(page, pathname, { timeoutMs = 30_000 } = {}) {
   async function onResponse(response) {
     try {
       const url = new URL(response.url());
-      if (url.origin !== SITE_URL || url.pathname !== pathname || response.request().method() !== "POST") return;
+      const matchesPath = pathname instanceof RegExp ? pathname.test(url.pathname) : url.pathname === pathname;
+      if (url.origin !== SITE_URL || !matchesPath || response.request().method() !== method) return;
       complete({ body: await response.json(), status: response.status() });
     } catch { complete({ error: "页面响应无法解析，未确认成功" }); }
   }
@@ -80,17 +81,22 @@ export async function capture(page, selector, log = console.log) {
   }
 }
 
-/** Refresh through the visible page control, then wait for its actual GET to finish. */
-async function refreshImage(page, control) {
-  const response = page.waitForResponse((res) => {
-    const url = new URL(res.url());
-    return url.origin === SITE_URL && /captcha/i.test(url.pathname) && res.request().method() === "GET";
-  }, { timeout: 15_000 });
-  // Attach rejection handling immediately, even if click itself fails.
-  const handled = response.then(async (res) => { await res.finished(); return res.ok(); }, () => false);
-  try { await control.click({ timeout: 10_000 }); }
-  catch { throw new PageFlowError("验证码刷新控件不可点击，未提交签到"); }
-  if (!await handled) throw new PageFlowError("页面刷新验证码失败或未收到验证码响应");
+/** Observe initialization BEFORE opening/refreshing: a GET can already lock the account. */
+export async function loadCaptcha(page, control) {
+  const watcher = observePost(page, /captcha/i, { timeoutMs: 15_000, method: "GET" });
+  try {
+    try { await control.click({ timeout: 10_000 }); }
+    catch { throw new PageFlowError("验证码打开或刷新控件不可点击，未提交签到"); }
+    const reply = await watcher.result;
+    if (reply.error) return { success: false, msg: reply.error };
+    if (isCheckinBlocked(reply.body)) {
+      return { success: false, blocked: true, msg: "获取验证码时被站点锁定：检测到签到脚本，今日签到机会已锁定" };
+    }
+    if (reply.status < 200 || reply.status >= 300 || reply.body?.ret !== 1) {
+      return { success: false, msg: `获取验证码失败（HTTP ${reply.status}），未进入识别或提交` };
+    }
+    return { success: true };
+  } finally { watcher.cancel(); }
 }
 
 async function submitImage(page, { box, input, button, pathname, solveImage, timeoutMs, log }) {
@@ -128,7 +134,8 @@ export async function runBrowserCheckin(page, {
     await page.locator("#passwd").fill(password);
     let loggedIn = false;
     for (let attempt = 0; attempt < 3; attempt++) {
-      await refreshImage(page, page.locator("#login-captcha-box"));
+      const captcha = await loadCaptcha(page, page.locator("#login-captcha-box"));
+      if (!captcha.success) return captcha;
       log(`自动识别登录验证码（${attempt + 1}/3）`);
       const reply = await submitImage(page, { box: "#login-captcha-box", input: "#captcha_code",
         pathname: "/auth/login", solveImage, timeoutMs, log });
@@ -155,13 +162,14 @@ export async function runBrowserCheckin(page, {
       if (await already.isVisible() && await already.isDisabled()) {
         return { success: true, alreadyCheckedIn: true, msg: "新加载的页面显示今日已签到" };
       }
-      await page.getByRole("button", { name: /立即续命/ }).click();
+      const captcha = await loadCaptcha(page, page.getByRole("button", { name: /立即续命/ }));
+      if (!captcha.success) return captcha;
       log(`签到弹窗图片结构: ${JSON.stringify(await captchaDiagnostics(page, "#checkin-captcha-box"))}`);
       needOpen = false;
+    } else {
+      const captcha = await loadCaptcha(page, page.locator("#checkin-refresh-btn"));
+      if (!captcha.success) return captcha;
     }
-    // The modal can initially contain only a placeholder; use its visible refresh
-    // control on the first attempt as well, instead of waiting for a nonexistent image.
-    await refreshImage(page, page.locator("#checkin-refresh-btn"));
     log(`自动识别签到验证码（${attempt + 1}/3）`);
     const reply = await submitImage(page, { box: "#checkin-captcha-box", input: "#checkin_captcha_code",
       button: "#checkin-submit-btn", pathname: "/user/checkin", solveImage, timeoutMs, log });

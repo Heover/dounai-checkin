@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { capture, inspectCaptchaBox, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
+import { capture, inspectCaptchaBox, loadCaptcha, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
 
 const reward = { ret: 1, msg: "获得了 257 MB流量和1个豆丁，时长延长 1.5 小时。" };
 const blocked = { ret: 0, is_blocked: true, msg: "今日签到机会已锁定" };
@@ -59,8 +59,8 @@ test("关闭、超时、取消和无法解析响应均结束且不判成功", as
 });
 
 class FakePage extends EventEmitter {
-  constructor(outcomes, { loggedIn = true, already = false, logins = [{ ret: 1 }] } = {}) {
-    super(); this.outcomes = [...outcomes]; this.logins = [...logins];
+  constructor(outcomes, { loggedIn = true, already = false, logins = [{ ret: 1 }], captchaReplies = [] } = {}) {
+    super(); this.outcomes = [...outcomes]; this.logins = [...logins]; this.captchaReplies = [...captchaReplies];
     Object.assign(this, { loggedIn, already, clicks: 0, submits: 0, reloads: 0, refreshes: 0, fills: [], image: Buffer.from("fixture-image") });
   }
   async goto(url) { this.currentURL = this.loggedIn ? `${SITE_URL}/user/panel` : url; }
@@ -70,6 +70,12 @@ class FakePage extends EventEmitter {
     else assert.equal(this.currentURL, target);
   }
   async reload() { this.reloads++; this.already = false; }
+  emitCaptcha() {
+    assert.equal(this.listenerCount("response"), 1, "必须在点击前监听验证码 GET");
+    this.emit("response", response(this.captchaReplies.shift() || { ret: 1 }, {
+      url: `${SITE_URL}/user/checkin/captcha`, method: "GET",
+    }));
+  }
   async waitForResponse(predicate) {
     const res = response({}, { url: `${SITE_URL}/auth/captcha`, method: "GET" });
     assert.ok(predicate(res)); return res;
@@ -92,7 +98,7 @@ class FakePage extends EventEmitter {
           assert.equal(page.listenerCount("response"), 1);
           page.submits++; page.already = true;
           page.emit("response", response(page.outcomes.shift()));
-        } else page.refreshes++;
+        } else { page.refreshes++; page.emitCaptcha(); }
       },
     };
   }
@@ -103,7 +109,7 @@ class FakePage extends EventEmitter {
       async isVisible() { return page.already; }, async isDisabled() { return page.already; },
       async click() {
         if (name === "控制面板") page.currentURL = `${SITE_URL}/user/panel`;
-        if (role === "button") page.clicks++;
+        if (role === "button") { page.clicks++; page.emitCaptcha(); }
       },
     };
   }
@@ -135,7 +141,7 @@ test("全自动登录和签到，无人工回调，输入登录验证码只提�
   assert.deepEqual(page.fills, [["#email2", "test@example.com"], ["#passwd", "test-only"],
     ["#captcha_code", "2"], ["#checkin_captcha_code", "2"]]);
   assert.equal(page.submits, 1);
-  assert.equal(page.refreshes, 2, "登录和签到均应主动获取验证码");
+  assert.equal(page.refreshes, 1, "打开签到弹窗已加载验证码，不应重复刷新");
   assertClean(page);
 });
 test("刷新一次且不把提交后乐观按钮判成功", async () => {
@@ -166,6 +172,41 @@ test("新页面已签到则跳过识别和提交", async () => {
   const page = new FakePage([], { already: true });
   assert.equal((await runBrowserCheckin(page, { ...options, solveImage: async () => { throw Error(); } })).alreadyCheckedIn, true);
   assert.equal(page.submits, 0);
+});
+
+test("真实 GET 锁定回归：打开签到弹窗后立即结束，不识别、不刷新、不提交", async () => {
+  let solves = 0;
+  const page = new FakePage([], { captchaReplies: [blocked] });
+  const outcome = await runBrowserCheckin(page, { ...options, solveImage: async () => { solves++; return "2"; } });
+  assert.equal(outcome.blocked, true);
+  assert.equal(outcome.success, false);
+  assert.equal(solves, 0);
+  assert.equal(page.clicks, 1);
+  assert.equal(page.refreshes, 0);
+  assert.equal(page.submits, 0);
+  assertClean(page);
+});
+
+test("登录验证码 GET 锁定与刷新中锁定均立即停止", async () => {
+  const login = new FakePage([], { loggedIn: false, captchaReplies: [blocked] });
+  assert.equal((await runBrowserCheckin(login, options)).blocked, true);
+  assert.equal(login.fills.filter(([selector]) => selector === "#captcha_code").length, 0);
+  assertClean(login);
+  const retry = new FakePage([captchaError], { captchaReplies: [{ ret: 1 }, blocked] });
+  assert.equal((await runBrowserCheckin(retry, options)).blocked, true);
+  assert.equal(retry.submits, 1);
+  assert.equal(retry.refreshes, 1);
+  assertClean(retry);
+});
+
+test("验证码 GET 业务失败时不截图或继续提交", async () => {
+  const page = new EventEmitter();
+  const outcome = await loadCaptcha(page, { async click() {
+    page.emit("response", response({ ret: 0 }, { url: `${SITE_URL}/auth/captcha`, method: "GET" }));
+  } });
+  assert.equal(outcome.success, false);
+  assert.match(outcome.msg, /获取验证码失败/);
+  assertClean(page);
 });
 test("识别失败或图片改变时不填写答案，不提交", async () => {
   for (const changed of [false, true]) {
