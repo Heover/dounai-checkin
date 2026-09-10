@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { runBrowserCheckin, PageFlowError } from "./browser-flow.mjs";
 import { sendServerChanMessage } from "./checkin.mjs";
 import { CaptchaVisionError } from "./captcha-vision.mjs";
+import { installPageDiagnostics, readCaptchaControls } from "./page-diagnostics.mjs";
 
 const HELP = `豆奶全自动页面签到
 
@@ -38,6 +39,8 @@ export async function main() {
   const timeoutMs = Number(process.env.CHECKIN_TIMEOUT_MS || 30000);
 
   let browser;
+  let page;
+  let stopDiagnostics;
   let stage = "启动浏览器";
   let outcome;
   try {
@@ -53,7 +56,8 @@ export async function main() {
     const { chromium } = await import("playwright-core");
     browser = await chromium.launch({ ...(channel === "chromium" ? {} : { channel }), headless: false, chromiumSandbox: true });
     const context = await browser.newContext({ viewport: null });
-    const page = await context.newPage();
+    page = await context.newPage();
+    stopDiagnostics = installPageDiagnostics(page);
     stage = "自动页面操作";
     outcome = await runBrowserCheckin(page, {
       email: process.env.DOUNAI_EMAIL,
@@ -61,6 +65,7 @@ export async function main() {
       timeoutMs,
     });
   } catch (error) {
+    if (page) console.log(`页面控件诊断: ${JSON.stringify(await readCaptchaControls(page))}`);
     // Playwright errors may include form values or private URLs in call logs.
     outcome = { success: false, msg: error instanceof CaptchaVisionError || error instanceof PageFlowError ? error.message : stage.startsWith("配置") ? stage : stage === "启动浏览器"
       ? describeLaunchError(error, channel)
@@ -75,6 +80,7 @@ export async function main() {
     );
     if (!outcome.success) process.exitCode = 1;
   } finally {
+    stopDiagnostics?.();
     await browser?.close();
   }
 }

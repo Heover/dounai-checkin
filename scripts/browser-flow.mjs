@@ -88,7 +88,8 @@ async function refreshImage(page, control) {
   }, { timeout: 15_000 });
   // Attach rejection handling immediately, even if click itself fails.
   const handled = response.then(async (res) => { await res.finished(); return res.ok(); }, () => false);
-  await control.click();
+  try { await control.click({ timeout: 10_000 }); }
+  catch { throw new PageFlowError("验证码刷新控件不可点击，未提交签到"); }
   if (!await handled) throw new PageFlowError("页面刷新验证码失败或未收到验证码响应");
 }
 
