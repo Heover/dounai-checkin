@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { capture, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
+import { runInNewContext } from "node:vm";
+import { capture, inspectCaptchaBox, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
 
 const reward = { ret: 1, msg: "获得了 257 MB流量和1个豆丁，时长延长 1.5 小时。" };
 const blocked = { ret: 0, is_blocked: true, msg: "今日签到机会已锁定" };
@@ -16,6 +17,26 @@ function assertClean(page) {
   assert.equal(page.listenerCount("response"), 0);
   assert.equal(page.listenerCount("close"), 0);
 }
+test("就绪检测识别 CSS 背景、Canvas、文字算式，不把加载提示当验证码", () => {
+  function inspect({ tag = "DIV", backgroundImage = "none", text = "", visible = true, complete = true, naturalWidth = 100 } = {}) {
+    const el = { tagName: tag, complete, naturalWidth, textContent: text,
+      getBoundingClientRect: () => ({ width: visible ? 100 : 0, height: 40 }),
+      querySelectorAll: () => [],
+    };
+    return runInNewContext(`(${inspectCaptchaBox.toString()})(box)`, {
+      box: el, getComputedStyle: () => ({ backgroundImage, display: "block", visibility: "visible" }),
+    });
+  }
+  const background = inspect({ backgroundImage: "url(data:image/png;base64,private-image)" });
+  assert.equal(background.ready, true);
+  assert.ok(!JSON.stringify(background).includes("private-image"));
+  assert.equal(inspect({ tag: "CANVAS" }).ready, true);
+  assert.equal(inspect({ tag: "IMG", complete: false }).ready, false);
+  assert.equal(inspect({ tag: "IMG", visible: false }).ready, false);
+  assert.equal(inspect({ text: "玖加三" }).ready, true);
+  assert.equal(inspect({ text: "加载中" }).ready, false);
+  assert.equal(inspect({ text: "加载失败" }).errorKind, "load-error");
+});
 test("只接受本站指定 POST，结束后清理监听", async () => {
   const page = new EventEmitter();
   const watcher = observePost(page, "/user/checkin");
@@ -114,6 +135,7 @@ test("全自动登录和签到，无人工回调，输入登录验证码只提�
   assert.deepEqual(page.fills, [["#email2", "test@example.com"], ["#passwd", "test-only"],
     ["#captcha_code", "2"], ["#checkin_captcha_code", "2"]]);
   assert.equal(page.submits, 1);
+  assert.equal(page.refreshes, 2, "登录和签到均应主动获取验证码");
   assertClean(page);
 });
 test("刷新一次且不把提交后乐观按钮判成功", async () => {

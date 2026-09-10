@@ -22,6 +22,7 @@ export function inspectCaptchaBox(box) {
   const textMath = /[\d零〇一二两三四五六七八九壹贰叁肆伍陆柒捌玖]\s*(?:[+*/×÷-]|加|减|乘|除)/.test(text);
   const boxVisible = visible(box);
   return { boxVisible, media, backgroundImage, textMath, errorKind,
+    notice: text.replace(/[^\u3400-\u9fff，。：；！、\s]/g, "").trim().slice(0, 80),
     childTags: [...new Set(nodes.slice(1).map((el) => el.tagName.toLowerCase()))],
     ready: boxVisible && !errorKind && (backgroundImage || textMath || media.some((el) => el.visible && el.loaded)),
   };
@@ -83,12 +84,12 @@ export async function capture(page, selector, log = console.log) {
 async function refreshImage(page, control) {
   const response = page.waitForResponse((res) => {
     const url = new URL(res.url());
-    return url.origin === SITE_URL && url.pathname === "/auth/captcha" && res.request().method() === "GET";
+    return url.origin === SITE_URL && /captcha/i.test(url.pathname) && res.request().method() === "GET";
   }, { timeout: 15_000 });
   // Attach rejection handling immediately, even if click itself fails.
   const handled = response.then(async (res) => { await res.finished(); return res.ok(); }, () => false);
   await control.click();
-  if (!await handled) throw new Error("页面刷新验证码失败");
+  if (!await handled) throw new PageFlowError("页面刷新验证码失败或未收到验证码响应");
 }
 
 async function submitImage(page, { box, input, button, pathname, solveImage, timeoutMs, log }) {
@@ -156,9 +157,10 @@ export async function runBrowserCheckin(page, {
       await page.getByRole("button", { name: /立即续命/ }).click();
       log(`签到弹窗图片结构: ${JSON.stringify(await captchaDiagnostics(page, "#checkin-captcha-box"))}`);
       needOpen = false;
-    } else {
-      await refreshImage(page, page.locator("#checkin-refresh-btn"));
     }
+    // The modal can initially contain only a placeholder; use its visible refresh
+    // control on the first attempt as well, instead of waiting for a nonexistent image.
+    await refreshImage(page, page.locator("#checkin-refresh-btn"));
     log(`自动识别签到验证码（${attempt + 1}/3）`);
     const reply = await submitImage(page, { box: "#checkin-captcha-box", input: "#checkin_captcha_code",
       button: "#checkin-submit-btn", pathname: "/user/checkin", solveImage, timeoutMs, log });
