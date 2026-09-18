@@ -11,7 +11,7 @@ const request = (pathname = "/user/checkin/captcha") => ({
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test("仅标记站内明确端点，不记录查询参数或其他站点", () => {
-  for (const [path, label] of [["/auth/login", "login"], ["/auth/captcha", "login-captcha"],
+  for (const [path, label] of [["/auth/login", "login"], ["/auth/captcha", "shared-captcha"],
     ["/user/checkin", "checkin"], ["/user/checkin/captcha", "checkin-captcha"]]) {
     assert.equal(diagnosticEndpoint(request(path)), label);
   }

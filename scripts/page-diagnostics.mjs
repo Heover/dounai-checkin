@@ -18,7 +18,9 @@ export function diagnosticEndpoint(request) {
   try {
     const url = new URL(request.url());
     if (url.origin !== "https://dounai.win") return null;
-    const labels = { "/auth/login": "login", "/auth/captcha": "login-captcha", "/user/checkin": "checkin", "/user/checkin/captcha": "checkin-captcha" };
+    // The site also calls /auth/captcha from the check-in modal; the surrounding
+    // flow stage, not this shared endpoint, identifies the captcha's purpose.
+    const labels = { "/auth/login": "login", "/auth/captcha": "shared-captcha", "/user/checkin": "checkin", "/user/checkin/captcha": "checkin-captcha" };
     return labels[url.pathname] || null;
   } catch { return null; }
 }
