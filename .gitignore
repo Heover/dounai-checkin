@@ -4,3 +4,4 @@
 # 依赖与 tesseract.js 运行时模型缓存
 node_modules/
 eng.traineddata
+temp/captcha-diagnostics/

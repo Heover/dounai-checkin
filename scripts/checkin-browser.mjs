@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { appendFile } from "node:fs/promises";
 import { runBrowserCheckin, PageFlowError } from "./browser-flow.mjs";
 import { sendServerChanMessage } from "./checkin.mjs";
 import { CaptchaVisionError } from "./captcha-vision.mjs";
@@ -42,6 +43,14 @@ export async function main() {
   let page;
   let stopDiagnostics;
   let stage = "启动浏览器";
+  const started = performance.now();
+  let stageStarted = started;
+  const onStage = (next) => {
+    console.log(`阶段结束: ${stage}，耗时 ${Math.round(performance.now() - stageStarted)} ms`);
+    stage = next;
+    stageStarted = performance.now();
+    console.log(`阶段开始: ${stage}`);
+  };
   let outcome;
   try {
     const missing = ["DOUNAI_EMAIL", "DOUNAI_PASSWD", "DEEPSEEK_API_KEY"].filter((name) => !process.env[name]);
@@ -54,15 +63,18 @@ export async function main() {
       throw new Error();
     }
     const { chromium } = await import("playwright-core");
+    console.log(`运行环境: ${JSON.stringify({ node: process.version, platform: process.platform, arch: process.arch, channel, timeoutMs, headless: false, sandbox: true, credentialsConfigured: true, visionConfigured: true, notificationConfigured: !!(process.env.SERVER_UID && process.env.SERVER_KEY) })}`);
     browser = await chromium.launch({ ...(channel === "chromium" ? {} : { channel }), headless: false, chromiumSandbox: true });
+    console.log(`浏览器版本: ${browser.version()}`);
     const context = await browser.newContext({ viewport: null });
     page = await context.newPage();
     stopDiagnostics = installPageDiagnostics(page);
-    stage = "自动页面操作";
+    onStage("自动页面操作");
     outcome = await runBrowserCheckin(page, {
       email: process.env.DOUNAI_EMAIL,
       password: process.env.DOUNAI_PASSWD,
       timeoutMs,
+      onStage,
     });
   } catch (error) {
     if (page) console.log(`页面控件诊断: ${JSON.stringify(await readCaptchaControls(page))}`);
@@ -73,6 +85,15 @@ export async function main() {
   }
 
   try {
+    const result = outcome.blocked ? "blocked" : outcome.success ? outcome.alreadyCheckedIn ? "already-checked-in" : "success" : "failed";
+    const elapsedMs = Math.round(performance.now() - started);
+    console.log(`执行汇总: ${JSON.stringify({ result, lastStage: stage, stageDurationMs: Math.round(performance.now() - stageStarted), elapsedMs })}`);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      try {
+        // Only locally generated fields; never write server messages or model output.
+        await appendFile(process.env.GITHUB_STEP_SUMMARY, `## 签到执行结果\n\n- 结果：${result}\n- 最后阶段：${stage}\n- 总耗时：${elapsedMs} ms\n- 详细状态和阶段耗时见执行签到日志；不保存截图或凭据。\n`);
+      } catch { console.log("无法写入 Actions 摘要，结果仍保留在日志中。"); }
+    }
     console.log(`${outcome.success ? "✅" : outcome.blocked ? "⛔" : "❌"} ${outcome.msg}`);
     await sendServerChanMessage(
       outcome.success ? "✅ 豆奶签到成功" : outcome.blocked ? "⛔ 豆奶签到已锁定" : "❌ 豆奶签到未完成",

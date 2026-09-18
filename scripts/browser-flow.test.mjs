@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { CaptchaVisionError } from "./captcha-vision.mjs";
 import { capture, inspectCaptchaBox, loadCaptcha, observePost, runBrowserCheckin, SITE_URL } from "./browser-flow.mjs";
 
 const reward = { ret: 1, msg: "获得了 257 MB流量和1个豆丁，时长延长 1.5 小时。" };
@@ -63,17 +64,20 @@ class FakePage extends EventEmitter {
     super(); this.outcomes = [...outcomes]; this.logins = [...logins]; this.captchaReplies = [...captchaReplies];
     Object.assign(this, { loggedIn, already, clicks: 0, submits: 0, reloads: 0, refreshes: 0, fills: [], image: Buffer.from("fixture-image") });
   }
-  async goto(url) { this.currentURL = this.loggedIn ? `${SITE_URL}/user/panel` : url; }
+  async goto(url) {
+    this.currentURL = this.loggedIn ? `${SITE_URL}/user/panel` : url;
+    if (!this.loggedIn) this.emitCaptcha("/auth/captcha");
+  }
   url() { return this.currentURL; }
   async waitForURL(target) {
-    if (typeof target === "function") { this.currentURL = `${SITE_URL}/user`; assert.ok(target(new URL(this.currentURL))); }
+    if (typeof target === "function") { this.currentURL = `${SITE_URL}/user`; this.loggedIn = true; assert.ok(target(new URL(this.currentURL))); }
     else assert.equal(this.currentURL, target);
   }
-  async reload() { this.reloads++; this.already = false; }
-  emitCaptcha() {
+  async reload() { this.reloads++; this.already = false; if (!this.loggedIn) this.emitCaptcha("/auth/captcha"); }
+  emitCaptcha(pathname = "/user/checkin/captcha") {
     assert.equal(this.listenerCount("response"), 1, "必须在点击前监听验证码 GET");
     this.emit("response", response(this.captchaReplies.shift() || { ret: 1 }, {
-      url: `${SITE_URL}/user/checkin/captcha`, method: "GET",
+      url: `${SITE_URL}${pathname}`, method: "GET",
     }));
   }
   async waitForResponse(predicate) {
@@ -84,7 +88,7 @@ class FakePage extends EventEmitter {
     const page = this;
     return {
       locator() { return this; }, filter() { return this; }, first() { return this; }, async waitFor() {},
-      async evaluate() { return { ready: true }; },
+      async evaluate(fn) { return fn.name === "readInlineCaptcha" ? page.inlineCaptcha ?? null : { ready: true }; },
       async screenshot() { return page.image; },
       async fill(value) {
         page.fills.push([selector, value]);
@@ -137,11 +141,14 @@ test("截图超时输出明确阶段，不泄露底层错误或私密 URL", asyn
 });
 test("全自动登录和签到，无人工回调，输入登录验证码只提交一次", async () => {
   const page = new FakePage([reward], { loggedIn: false });
-  assert.equal((await runBrowserCheckin(page, options)).success, true);
+  const stages = [];
+  assert.equal((await runBrowserCheckin(page, { ...options, onStage: stage => stages.push(stage) })).success, true);
+  assert.deepEqual(stages, ["登录页及验证码初始化", "登录验证码截图", "登录验证码识别", "登录提交及响应",
+    "控制面板及签到状态检查", "签到验证码初始化", "签到验证码截图", "签到验证码识别", "签到提交及响应"]);
   assert.deepEqual(page.fills, [["#email2", "test@example.com"], ["#passwd", "test-only"],
     ["#captcha_code", "2"], ["#checkin_captcha_code", "2"]]);
   assert.equal(page.submits, 1);
-  assert.equal(page.refreshes, 1, "打开签到弹窗已加载验证码，不应重复刷新");
+  assert.equal(page.refreshes, 0, "应使用页面自动加载的验证码，不应额外点击刷新");
   assertClean(page);
 });
 test("刷新一次且不把提交后乐观按钮判成功", async () => {
@@ -165,6 +172,8 @@ test("登录验证码三次失败有界停止，账号错误不重试", async ()
     const page = new FakePage([], { loggedIn: false, logins });
     assert.equal((await runBrowserCheckin(page, options)).success, false);
     assert.equal(page.fills.filter(([selector]) => selector === "#captcha_code").length, logins.length);
+    assert.equal(page.refreshes, 0);
+    assert.equal(page.reloads, logins.length - 1);
     assert.equal(page.submits, 0); assertClean(page);
   }
 });
@@ -217,6 +226,52 @@ test("识别失败或图片改变时不填写答案，不提交", async () => {
     } }));
     assert.equal(page.submits, 0); assert.deepEqual(page.fills, []); assertClean(page);
   }
+});
+
+test("验证码原图相同而容器截图变化，不应误报验证码过期", async () => {
+  const page = new FakePage([reward]);
+  page.inlineCaptcha = "data:image/png;base64,YQ==";
+  const outcome = await runBrowserCheckin(page, { ...options, solveImage: async (image) => {
+    assert.equal(image.toString(), "a", "应发送原始PNG内容，而非页面装饰截图");
+    page.image = Buffer.from("different-backdrop-rendering");
+    return "2";
+  } });
+  assert.equal(outcome.success, true);
+  assert.equal(page.submits, 1);
+  assertClean(page);
+});
+
+test("识别不确定仅换图有限重试，不提交猜测答案", async () => {
+  const page = new FakePage([reward]);
+  let attempts = 0;
+  const result = await runBrowserCheckin(page, { ...options, solveImage: async () => {
+    if (++attempts === 1) throw new CaptchaVisionError("不确定", { retryable: true });
+    return "2";
+  } });
+  assert.equal(result.success, true);
+  assert.equal(attempts, 2); assert.equal(page.submits, 1); assert.equal(page.refreshes, 1);
+  assertClean(page);
+  for (const loggedIn of [false, true]) {
+    const failure = new FakePage([], { loggedIn });
+    let calls = 0;
+    const result = await runBrowserCheckin(failure, { ...options, solveImage: async () => {
+      calls++; throw new CaptchaVisionError("不确定", { retryable: true });
+    } });
+    assert.equal(result.success, false); assert.equal(calls, 3); assert.equal(failure.submits, 0);
+    assert.equal(failure.fills.filter(([selector]) => /captcha_code/.test(selector)).length, 0);
+    assertClean(failure);
+  }
+});
+
+test("验证码原图在识别期间变化，即使容器截图相同也停止提交", async () => {
+  const page = new FakePage([reward]);
+  page.inlineCaptcha = "data:image/png;base64,YQ==";
+  await assert.rejects(runBrowserCheckin(page, { ...options, solveImage: async () => {
+    page.inlineCaptcha = "data:image/png;base64,Yg==";
+    return "2";
+  } }), /识别期间验证码已改变/);
+  assert.equal(page.submits, 0);
+  assertClean(page);
 });
 test("外站登录跳转不填写凭证，缺少配置不启动流程", async () => {
   const page = new FakePage([]);

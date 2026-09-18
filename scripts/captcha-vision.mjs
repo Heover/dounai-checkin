@@ -1,12 +1,19 @@
 export const VISION_MODEL = "deepseek-v4-flash-vision-exp";
-export class CaptchaVisionError extends Error {}
+export class CaptchaVisionError extends Error {
+  constructor(message, { retryable = false } = {}) {
+    super(message);
+    this.retryable = retryable;
+  }
+}
 
 /** Parse data only. Never execute instructions returned by an image/model. */
 export function parseCaptchaPrediction(content) {
-  if (typeof content !== "string") throw new Error("验证码识别未返回文本");
-  const data = JSON.parse(content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim());
+  if (typeof content !== "string") throw new CaptchaVisionError("验证码识别未返回文本");
+  let data;
+  try { data = JSON.parse(content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim()); }
+  catch { throw new CaptchaVisionError("验证码识别响应不是有效 JSON，未提交"); }
   if (data?.uncertain !== false || typeof data.expression !== "string") {
-    throw new Error("验证码识别不确定，已停止提交");
+    throw new CaptchaVisionError("验证码识别不确定，未提交", { retryable: true });
   }
   const expression = data.expression.normalize("NFKC").replace(/\s/g, "")
     .replace(/[零〇一二两三四五六七八九壹贰叁肆伍陆柒捌玖]/g,
@@ -15,12 +22,12 @@ export function parseCaptchaPrediction(content) {
     .replace(/加/g, "+").replace(/减/g, "-").replace(/乘以|乘|×|x/gi, "*")
     .replace(/除以|除|÷/g, "/").replace(/等于|[=?？]/g, "");
   const match = expression.match(/^(\d{1,2})([+*/-])(\d{1,2})$/);
-  if (!match) throw new Error("验证码不是可验证的双操作数算式");
+  if (!match) throw new CaptchaVisionError("验证码不是可验证的双操作数算式", { retryable: true });
   const a = Number(match[1]);
   const b = Number(match[3]);
   const value = { "+": () => a + b, "-": () => a - b, "*": () => a * b, "/": () => a / b }[match[2]]();
   if (!Number.isInteger(value) || Math.abs(value) > 999 || String(value) !== String(data.answer)) {
-    throw new Error("验证码算式与答案不一致，已停止提交");
+    throw new CaptchaVisionError("验证码算式与答案不一致，未提交", { retryable: true });
   }
   return String(value);
 }
@@ -50,6 +57,7 @@ export async function solveCaptchaImage(png, {
     return parseCaptchaPrediction(body?.choices?.[0]?.message?.content);
   } catch (error) {
     // Do not expose HTTP request headers, image data, or model raw output.
+    if (error instanceof CaptchaVisionError) throw error;
     if (res && !res.ok) throw new CaptchaVisionError(`DeepSeek 识别请求失败（HTTP ${res.status}）`);
     if (error.name === "TimeoutError" || error.name === "AbortError") throw new CaptchaVisionError("DeepSeek 识别超时，未提交验证码");
     throw new CaptchaVisionError("DeepSeek 未返回可验证的验证码答案，未提交");

@@ -29,6 +29,11 @@ jobs:
         run: npm test
       - name: 安装浏览器
         run: npx playwright-core install --with-deps chrome
+      - name: 记录运行环境（不输出环境变量）
+        run: |
+          node --version
+          npm --version
+          google-chrome --version
       - name: 执行签到
         env:
           DOUNAI_EMAIL: ${{ secrets.DOUNAI_EMAIL }}
