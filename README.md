@@ -1,5 +1,17 @@
 # 豆奶全自动页面签到
 
+## Codex 后台签到 Skill
+
+仓库提供 [dounai-background-checkin](skills/dounai-background-checkin/SKILL.md)，
+用于 Codex 内置浏览器的后台页面签到，不占用系统鼠标键盘。该方式直接识别可见验证码，
+无需 DeepSeek，并保留“已签到则跳过、锁定或验证码不确定就停止”的规则。
+
+可直接让 Codex：“读取本仓库 `skills/dounai-background-checkin/SKILL.md`，按技能执行今日签到。”
+将该目录安装到 Codex 的技能目录后，也可使用 `$dounai-background-checkin` 调用。
+技能文件本身不创建定时任务，不会改变已有的每晚 23:00 调度。
+
+## Node.js 脚本方式
+
 程序打开浏览器页面，自动登录、识别验证码、点击签到并发送 Server 酱3 通知。
 没有人工填验证码、终端确认或交接步骤。支持本地运行；工作流文件保留北京时间 **00:07**
 的定时配置，但只有启用 GitHub 工作流后才会执行。各次本地和 Actions 验证结果见下文。

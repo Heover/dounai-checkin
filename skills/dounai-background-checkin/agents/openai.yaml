@@ -1,0 +1,4 @@
+interface:
+  display_name: "豆奶后台签到"
+  short_description: "通过内置浏览器后台完成豆奶页面签到，核对奖励并在异常时停止"
+  default_prompt: "使用 $dounai-background-checkin 在后台完成今天的豆奶签到，并核对页面奖励提示。"
